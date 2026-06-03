@@ -1,0 +1,31 @@
+{
+  "name": "@pingroom/cli",
+  "version": "0.1.0",
+  "description": "Send PingRoom pings from CI, scripts, and agents — deploy notifications in one line.",
+  "type": "module",
+  "bin": {
+    "pingroom": "bin/pingroom.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "pingroom",
+    "notifications",
+    "push",
+    "ci",
+    "deploy",
+    "webhook",
+    "agent",
+    "mcp"
+  ],
+  "license": "MIT",
+  "homepage": "https://pingroom.io",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/pingroom/cli.git"
+  }
+}

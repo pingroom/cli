@@ -1,0 +1,49 @@
+name: 'PingRoom Notify'
+description: 'Send a PingRoom ping — deploy and CI notifications straight to your phone.'
+author: 'PingRoom'
+branding:
+  icon: 'bell'
+  color: 'red'
+
+inputs:
+  message:
+    description: 'Ping body text (required).'
+    required: true
+  webhook-url:
+    description: 'Room webhook URL. Best for CI — carries its own secret, no browser auth. Store it as a secret.'
+    required: false
+  token:
+    description: 'Agent access token (alternative to webhook-url; use with `room`).'
+    required: false
+  room:
+    description: 'Room invite code (used with `token`).'
+    required: false
+  title:
+    description: 'Ping title (<= 40 chars).'
+    required: false
+  action:
+    description: 'Quick-action slot 1–4 to attribute the ping to.'
+    required: false
+  data:
+    description: 'Extra JSON data object, e.g. {"commit":"abc123"}.'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        PINGROOM_WEBHOOK_URL: ${{ inputs.webhook-url }}
+        PINGROOM_TOKEN: ${{ inputs.token }}
+        PR_MESSAGE: ${{ inputs.message }}
+        PR_TITLE: ${{ inputs.title }}
+        PR_ACTION: ${{ inputs.action }}
+        PR_DATA: ${{ inputs.data }}
+        PR_ROOM: ${{ inputs.room }}
+      run: |
+        args=(ping -m "$PR_MESSAGE")
+        [ -n "$PR_TITLE" ]  && args+=(-t "$PR_TITLE")
+        [ -n "$PR_ACTION" ] && args+=(-a "$PR_ACTION")
+        [ -n "$PR_DATA" ]   && args+=(-d "$PR_DATA")
+        [ -n "$PR_ROOM" ]   && args+=(--room "$PR_ROOM")
+        npx --yes @pingroom/cli@^0.1.0 "${args[@]}"
