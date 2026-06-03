@@ -26,6 +26,6 @@
   "homepage": "https://pingroom.io",
   "repository": {
     "type": "git",
-    "url": "https://gitlab.com/pingroom/cli.git"
+    "url": "git+https://gitlab.com/pingroom/cli.git"
   }
 }
