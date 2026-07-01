@@ -33,6 +33,12 @@ Examples:
   pingroom ping --token "$PINGROOM_TOKEN" --room ab12cd -m "Release shipped" \\
     -d '{"version":"1.4.0","env":"prod"}'
 
+Security:
+  Prefer the env vars (PINGROOM_WEBHOOK_URL / PINGROOM_TOKEN) over passing
+  secrets as --webhook / --token flags: argv is visible to other users via the
+  process table (ps) and may be captured in shell history. URLs must use https
+  (loopback http is allowed for local dev).
+
 Exit codes: 0 on success, 1 on delivery failure, 2 on bad usage.`;
 
 function parseArgs(argv) {
@@ -71,6 +77,22 @@ function parseArgs(argv) {
 function fail(message, code = 1) {
   process.stderr.write(`pingroom: ${message}\n`);
   process.exit(code);
+}
+
+// Refuse to send a bearer token or webhook secret over cleartext http. A
+// loopback host is allowed so local dev against http://localhost still works.
+function requireSafeUrl(kind, raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    fail(`${kind} is not a valid URL`, 2);
+  }
+  const isLoopback = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLoopback)) {
+    fail(`${kind} must use https (refusing to send credentials over cleartext)`, 2);
+  }
+  return raw;
 }
 
 async function postJson(url, body, headers = {}) {
@@ -121,6 +143,7 @@ async function ping(args) {
   let result;
 
   if (webhook) {
+    requireSafeUrl('--webhook', webhook);
     const body = { message };
     if (args.title) body.title = args.title;
     if (args.action !== undefined) body.action = Number(args.action);
@@ -128,6 +151,7 @@ async function ping(args) {
     result = await postJson(webhook, body);
   } else if (token) {
     if (!args.room) fail('--room is required when using --token', 2);
+    requireSafeUrl('--api', apiBase);
     const url = `${apiBase}/api/agent/rooms/${encodeURIComponent(args.room)}/notifications`;
     const body = { message };
     if (args.title) body.title = args.title;

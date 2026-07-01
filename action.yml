@@ -46,4 +46,4 @@ runs:
         [ -n "$PR_ACTION" ] && args+=(-a "$PR_ACTION")
         [ -n "$PR_DATA" ]   && args+=(-d "$PR_DATA")
         [ -n "$PR_ROOM" ]   && args+=(--room "$PR_ROOM")
-        npx --yes @pingroom/cli@^0.1.0 "${args[@]}"
+        npx --yes @pingroom/cli@0.1.0 "${args[@]}"
