@@ -244,3 +244,140 @@ test('exit 1: network error (connection refused)', () => {
   assert.equal(status, 1);
   assert.match(stderr, /network error/);
 });
+
+// ---------------------------------------------------------------------------
+// Questions — ask / watch / list / cancel
+// ---------------------------------------------------------------------------
+
+/** Route a stub server by "METHOD /pathname". Each handler returns { status, body }. */
+function questionServer(routes) {
+  const received = [];
+  return startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const path = req.url.split('?')[0];
+      received.push({ method: req.method, path, query: req.url.split('?')[1] ?? '', auth: req.headers['authorization'], body });
+      const handler = routes[`${req.method} ${path}`];
+      const out = handler ? handler(body) : { status: 404, body: { message: 'no route' } };
+      res.writeHead(out.status ?? 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out.body ?? {}));
+    });
+  }).then((s) => ({ ...s, received }));
+}
+
+test('exit 2: ask without --prompt', () => {
+  const { status, stderr } = run(['ask', '--token', 't', '--room', 'ab12cd']);
+  assert.equal(status, 2);
+  assert.match(stderr, /--prompt is required/);
+});
+
+test('exit 2: ask without a token', () => {
+  const { status, stderr } = run(['ask', '--room', 'ab12cd', '-p', 'Deploy?']);
+  assert.equal(status, 2);
+  assert.match(stderr, /agent token is required/);
+});
+
+test('exit 2: ask without --room', () => {
+  const { status, stderr } = run(['ask', '--token', 't', '-p', 'Deploy?']);
+  assert.equal(status, 2);
+  assert.match(stderr, /--room is required/);
+});
+
+test('exit 2: watch without an id', () => {
+  const { status, stderr } = run(['watch', '--token', 't']);
+  assert.equal(status, 2);
+  assert.match(stderr, /question id is required/);
+});
+
+test('exit 2: bad --scope', () => {
+  const { status, stderr } = run(['ask', '--token', 't', '--room', 'ab12cd', '-p', 'x', '--scope', 'sideways']);
+  assert.equal(status, 2);
+  assert.match(stderr, /--scope must be/);
+});
+
+test('ask (no --wait) creates the question and prints its id', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_1', state: 'pending' } }),
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl,
+      '-p', 'Which env?', '-o', 'prod:Production', '-o', 'staging:Staging', '--scope', 'room',
+    ]);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'q_1');
+    assert.equal(received[0].auth, 'Bearer tok');
+    assert.deepEqual(JSON.parse(received[0].body), {
+      prompt: 'Which env?',
+      options: [{ value: 'prod', label: 'Production' }, { value: 'staging', label: 'Staging' }],
+      responder_scope: 'room',
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('ask --wait blocks and prints the chosen value with exit 0', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_2', state: 'pending' } }),
+    'GET /api/agent/questions/q_2/wait': () => ({ status: 200, body: { id: 'q_2', state: 'answered', answer: { value: 'approve', label: 'Approve' } } }),
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--wait', '-p', 'Deploy?',
+    ]);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'approve');
+  } finally {
+    server.close();
+  }
+});
+
+test('ask --wait exits 3 on expiry', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_3', state: 'pending' } }),
+    'GET /api/agent/questions/q_3/wait': () => ({ status: 200, body: { id: 'q_3', state: 'expired', answer: null } }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--wait', '-p', 'Deploy?',
+    ]);
+    assert.equal(status, 3);
+    assert.equal(stdout.trim(), '');
+    assert.match(stderr, /question expired/);
+  } finally {
+    server.close();
+  }
+});
+
+test('list prints a row per question', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'GET /api/agent/questions': () => ({ status: 200, body: { questions: [
+      { id: 'q_1', state: 'answered', prompt: 'Deploy?', answer: { value: 'approve' } },
+      { id: 'q_2', state: 'pending', prompt: 'Merge?', answer: null },
+    ] } }),
+  });
+  try {
+    const { status, stdout } = await runAsync(['list', '--token', 'tok', '--api', baseUrl, '--state', 'all']);
+    assert.equal(status, 0);
+    assert.match(stdout, /q_1\s+answered\s+Deploy\? → approve/);
+    assert.match(stdout, /q_2\s+pending\s+Merge\?/);
+    assert.match(received[0].query, /state=all/);
+  } finally {
+    server.close();
+  }
+});
+
+test('cancel withdraws a pending question', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/questions/q_9/cancel': () => ({ status: 200, body: { id: 'q_9', state: 'cancelled' } }),
+  });
+  try {
+    const { status, stdout } = await runAsync(['cancel', '--token', 'tok', '--api', baseUrl, 'q_9']);
+    assert.equal(status, 0);
+    assert.match(stdout, /cancelled \(cancelled\)/);
+  } finally {
+    server.close();
+  }
+});
