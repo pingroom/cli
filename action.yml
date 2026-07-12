@@ -1,5 +1,5 @@
 name: 'PingRoom Notify'
-description: 'Send a PingRoom ping — deploy and CI notifications straight to your phone.'
+description: 'Send a PingRoom ping — or hand a deploy/CI decision to a human and block on their answer.'
 author: 'PingRoom'
 branding:
   icon: 'bell'
@@ -7,13 +7,13 @@ branding:
 
 inputs:
   message:
-    description: 'Ping body text (required).'
+    description: 'Ping body text, or the prompt a human reads for a handoff (required).'
     required: true
   webhook-url:
     description: 'Room webhook URL. Best for CI — carries its own secret, no browser auth. Store it as a secret.'
     required: false
   token:
-    description: 'Agent access token (alternative to webhook-url; use with `room`).'
+    description: 'Agent access token (alternative to webhook-url; use with `room`). Required for handoffs.'
     required: false
   room:
     description: 'Room invite code (used with `token`).'
@@ -27,12 +27,71 @@ inputs:
   data:
     description: 'Extra JSON data object, e.g. {"commit":"abc123"}.'
     required: false
+  require-ack:
+    description: 'Keep the ping open until one eligible recipient acknowledges it.'
+    required: false
+    default: 'false'
+  ack-timeout:
+    description: 'Optional acknowledgement deadline in seconds (requires `require-ack: true`).'
+    required: false
+  handoff:
+    description: 'Send a handoff instead of a ping (hands a decision to a specific human). Requires `token`.'
+    required: false
+    default: 'false'
+  question:
+    description: 'For a handoff: make it a question rather than a simple acknowledge. Implied when `options` is set.'
+    required: false
+    default: 'false'
+  options:
+    description: 'For a question handoff: newline- or comma-separated value:label options, e.g. "deploy:Deploy\nhold:Hold". At least 2.'
+    required: false
+  target:
+    description: 'For a handoff: recipient — "me" (default) or a specific user uuid.'
+    required: false
+  expires-in:
+    description: 'For a handoff: expiry in seconds (120..86400, default 900).'
+    required: false
+  urgency:
+    description: 'For a handoff: "active" (default) or "passive".'
+    required: false
+  idempotency-key:
+    description: 'For a handoff: dedupe key sent as Idempotency-Key; retries reuse it.'
+    required: false
+  correlation-id:
+    description: 'For a handoff: opaque id echoed on every read.'
+    required: false
+  reply-to:
+    description: 'For a handoff: opaque reply-to id echoed back.'
+    required: false
+  wait:
+    description: 'For a handoff: block until acked / answered / expired / cancelled.'
+    required: false
+    default: 'false'
+
+outputs:
+  handoff-id:
+    description: 'The id of the created handoff (handoff mode only).'
+    value: ${{ steps.pingroom.outputs.handoff-id }}
+  state:
+    description: 'Terminal handoff state: acked | answered | expired | cancelled (or open/pending without wait).'
+    value: ${{ steps.pingroom.outputs.state }}
+  acknowledged-by:
+    description: 'The user id that acknowledged an ack handoff.'
+    value: ${{ steps.pingroom.outputs.acknowledged-by }}
+  answer:
+    description: 'The chosen value of an answered question handoff (any value, including a negative one).'
+    value: ${{ steps.pingroom.outputs.answer }}
+  delivery-state:
+    description: 'Delivery state of the handoff: enqueued | pending.'
+    value: ${{ steps.pingroom.outputs.delivery-state }}
 
 runs:
   using: 'composite'
   steps:
-    - shell: bash
+    - id: pingroom
+      shell: bash
       env:
+        # Secrets are mapped to env, never echoed to the log.
         PINGROOM_WEBHOOK_URL: ${{ inputs.webhook-url }}
         PINGROOM_TOKEN: ${{ inputs.token }}
         PR_MESSAGE: ${{ inputs.message }}
@@ -40,10 +99,64 @@ runs:
         PR_ACTION: ${{ inputs.action }}
         PR_DATA: ${{ inputs.data }}
         PR_ROOM: ${{ inputs.room }}
+        PR_REQUIRE_ACK: ${{ inputs.require-ack }}
+        PR_ACK_TIMEOUT: ${{ inputs.ack-timeout }}
+        PR_HANDOFF: ${{ inputs.handoff }}
+        PR_QUESTION: ${{ inputs.question }}
+        PR_OPTIONS: ${{ inputs.options }}
+        PR_TARGET: ${{ inputs.target }}
+        PR_EXPIRES_IN: ${{ inputs.expires-in }}
+        PR_URGENCY: ${{ inputs.urgency }}
+        PR_IDEMPOTENCY_KEY: ${{ inputs.idempotency-key }}
+        PR_CORRELATION_ID: ${{ inputs.correlation-id }}
+        PR_REPLY_TO: ${{ inputs.reply-to }}
+        PR_WAIT: ${{ inputs.wait }}
       run: |
+        set -o pipefail
+        CLI="npx --yes @pingroom/cli@0.2.0"
+
+        if [ "$PR_HANDOFF" = "true" ]; then
+          args=(handoff -m "$PR_MESSAGE")
+          [ "$PR_QUESTION" = "true" ] && args+=(--question)
+          if [ -n "$PR_OPTIONS" ]; then
+            # Split options on newlines or commas; each is a value:label spec.
+            while IFS= read -r opt; do
+              opt="$(printf '%s' "$opt" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -n "$opt" ] && args+=(-o "$opt")
+            done < <(printf '%s' "$PR_OPTIONS" | tr ',' '\n')
+          fi
+          [ -n "$PR_TARGET" ]          && args+=(--target "$PR_TARGET")
+          [ -n "$PR_EXPIRES_IN" ]      && args+=(--expires-in "$PR_EXPIRES_IN")
+          [ -n "$PR_URGENCY" ]         && args+=(--urgency "$PR_URGENCY")
+          [ -n "$PR_IDEMPOTENCY_KEY" ] && args+=(--idempotency-key "$PR_IDEMPOTENCY_KEY")
+          [ -n "$PR_CORRELATION_ID" ]  && args+=(--correlation-id "$PR_CORRELATION_ID")
+          [ -n "$PR_REPLY_TO" ]        && args+=(--reply-to "$PR_REPLY_TO")
+          [ -n "$PR_DATA" ]            && args+=(-d "$PR_DATA")
+          [ "$PR_WAIT" = "true" ]      && args+=(--wait)
+
+          # The handoff command prints machine-readable `key=value` lines. Capture
+          # them, forward each to $GITHUB_OUTPUT, and preserve the CLI exit code so
+          # the workflow step still fails on expiry (3) / error (1) etc.
+          out="$($CLI "${args[@]}")"
+          code=$?
+          printf '%s\n' "$out"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              id)             echo "handoff-id=$value"      >> "$GITHUB_OUTPUT" ;;
+              state)          echo "state=$value"           >> "$GITHUB_OUTPUT" ;;
+              acked-by)       echo "acknowledged-by=$value" >> "$GITHUB_OUTPUT" ;;
+              answer)         echo "answer=$value"          >> "$GITHUB_OUTPUT" ;;
+              delivery-state) echo "delivery-state=$value"  >> "$GITHUB_OUTPUT" ;;
+            esac
+          done <<< "$out"
+          exit $code
+        fi
+
         args=(ping -m "$PR_MESSAGE")
         [ -n "$PR_TITLE" ]  && args+=(-t "$PR_TITLE")
         [ -n "$PR_ACTION" ] && args+=(-a "$PR_ACTION")
         [ -n "$PR_DATA" ]   && args+=(-d "$PR_DATA")
         [ -n "$PR_ROOM" ]   && args+=(--room "$PR_ROOM")
-        npx --yes @pingroom/cli@0.2.0 "${args[@]}"
+        [ "$PR_REQUIRE_ACK" = "true" ] && args+=(--require-ack)
+        [ -n "$PR_ACK_TIMEOUT" ] && args+=(--ack-timeout "$PR_ACK_TIMEOUT")
+        $CLI "${args[@]}"
