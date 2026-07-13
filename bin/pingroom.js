@@ -12,9 +12,13 @@
 //   cancel   Withdraw a pending question.
 //   handoff  Hand a decision to a specific human (ack or question) and, with
 //            --wait, block until they acknowledge / answer.
+//   handoffs List the agent's open handoffs or bounded recent history.
 //
 // Exit codes: 0 success/answered/acked · 1 error · 2 bad usage · 3 expired ·
 // 4 cancelled/recipient-not-ready.
+
+import { randomBytes } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 
 const DEFAULT_API = process.env.PINGROOM_API_URL || 'https://api.pingroom.io';
 
@@ -31,6 +35,7 @@ Commands:
   cancel   Withdraw a pending question
   handoff  Hand a decision (ack or question) to a specific human; with --wait,
            block until they acknowledge or answer
+  handoffs List the agent's open handoffs or bounded recent history
 
 ping options:
   -m, --message <text>   Ping body text (required)
@@ -63,7 +68,7 @@ handoff options (agent token required; consent scope pingroom:handoffs:create):
   -m, --message <text>   The prompt a human reads (required)
       --question         Make it a question (else a simple acknowledge). Also
                          implied whenever one or more --option is given.
-  -o, --option <v:label> A question option; repeat for 2+. Requires --question.
+  -o, --option <v:label> A question option; repeat for 2–4. Requires --question.
       --target <id>      Recipient: 'me' (default) or a specific user uuid
       --expires-in <s>   Expiry in seconds (120..86400, default 900)
       --urgency <u>      'active' (default) or 'passive'
@@ -73,6 +78,10 @@ handoff options (agent token required; consent scope pingroom:handoffs:create):
   -d, --data <json>      Structured data object echoed on the handoff
       --wait             Block until acked / answered / expired / cancelled
       --timeout <sec>    Per long-poll hold with --wait (0–20, server caps 25)
+      --github-output <path>  Safely append handoff outputs for GitHub Actions
+
+handoffs options (agent token required; consent scope pingroom:handoffs:create):
+      --state <s>        open | all (default open)
 
 Shared:
       --token <token>    Agent access token (or env PINGROOM_TOKEN)
@@ -103,6 +112,8 @@ Examples:
   pingroom handoff --token "$T" -m "Ship 1.4.0?" --question \\
     -o deploy:Deploy -o hold:Hold --wait
   # -> exit 0 (answered, any value incl. 'hold'); 3 expired; 4 recipient-not-ready
+
+  pingroom handoffs --token "$T" --state all   # recent history (up to 200/kind)
 
 Security:
   Prefer the env vars (PINGROOM_WEBHOOK_URL / PINGROOM_TOKEN) over passing
@@ -228,6 +239,7 @@ function parseHandoffArgs(argv) {
     '--reply-to': 'reply_to',
     '-d': 'data', '--data': 'data',
     '--timeout': 'timeout',
+    '--github-output': 'github_output',
     '--token': 'token',
     '--api': 'api',
     '--wait': 'wait',
@@ -546,6 +558,34 @@ async function list(args) {
   return EXIT.OK;
 }
 
+async function listHandoffs(args) {
+  if (args.help) { process.stdout.write(`${HELP}\n`); return EXIT.OK; }
+  const { token, apiBase } = agentContext(args);
+  const state = args.state || 'open';
+  if (state !== 'open' && state !== 'all') {
+    fail("--state must be 'open' or 'all' for handoffs", EXIT.USAGE);
+  }
+
+  const url = `${apiBase}/api/agent/handoffs?state=${encodeURIComponent(state)}`;
+  const { res, text, json } = await httpJson('GET', url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    const detail = (json && (json.message || json.code)) || `HTTP ${res.status}`;
+    fail(`handoffs list failed: ${detail}`);
+  }
+  if (args.json) { process.stdout.write(`${text}\n`); return EXIT.OK; }
+
+  const handoffs = (json && json.handoffs) || [];
+  if (handoffs.length === 0) { process.stdout.write('no handoffs\n'); return EXIT.OK; }
+  for (const h of handoffs) {
+    const answer = h.answer && (h.answer.value ?? h.answer.text);
+    const outcome = answer !== undefined && answer !== null ? ` → ${answer}` : '';
+    process.stdout.write(
+      `${h.id}  ${String(h.kind || '').padEnd(8)}  ${String(h.state || '').padEnd(9)}  ${h.prompt || ''}${outcome}\n`,
+    );
+  }
+  return EXIT.OK;
+}
+
 // --- handoff ---------------------------------------------------------------
 
 // Terminal wire states across both kinds. ack: open→acked|expired.
@@ -571,22 +611,72 @@ function exitForHandoffState(state) {
 // the answer value / acked-by when present, one `key=value` per line to stdout.
 function printHandoff(h) {
   const lines = [`id=${h.id ?? ''}`, `state=${h.state ?? ''}`];
-  if (h.delivery_state !== undefined) lines.push(`delivery-state=${h.delivery_state}`);
+  if (h.delivery_state != null) lines.push(`delivery-state=${h.delivery_state}`);
   if (h.correlation_id) lines.push(`correlation-id=${h.correlation_id}`);
   if (h.state === 'answered') {
     const value = h.answer && (h.answer.value ?? h.answer.text) || '';
     lines.push(`answer=${value}`);
   }
   if (h.state === 'acked') {
-    lines.push(`acked-by=${h.acked_by ?? ''}`);
+    // The Handoff API returns a privacy-aware actor object. Only expose its id
+    // in the machine-readable CLI/GitHub Action output; a redacted actor yields
+    // an empty value instead of the unhelpful "[object Object]" string.
+    const ackerId = h.acked_by && typeof h.acked_by === 'object'
+      ? h.acked_by.id
+      : h.acked_by;
+    lines.push(`acked-by=${ackerId ?? ''}`);
     if (h.acked_at) lines.push(`acked-at=${h.acked_at}`);
   }
   process.stdout.write(`${lines.join('\n')}\n`);
 }
 
+/**
+ * Append the composite Action's declared outputs without interpreting stdout.
+ * Values use GitHub's multiline protocol with a fresh random delimiter. Output
+ * names are a fixed allowlist; untrusted answer text can never create a key.
+ */
+function writeGitHubHandoffOutputs(path, h) {
+  if (typeof path !== 'string' || path.length === 0) {
+    fail('--github-output must be a non-empty path', EXIT.USAGE);
+  }
+
+  const ackerId = h.acked_by && typeof h.acked_by === 'object'
+    ? h.acked_by.id
+    : h.acked_by;
+  const fields = [
+    ['handoff-id', h.id ?? ''],
+    ['state', h.state ?? ''],
+  ];
+  if (h.delivery_state != null) fields.push(['delivery-state', h.delivery_state]);
+  if (h.state === 'answered') {
+    fields.push(['answer', h.answer && (h.answer.value ?? h.answer.text) || '']);
+  }
+  if (h.state === 'acked') fields.push(['acknowledged-by', ackerId ?? '']);
+
+  const blocks = fields.map(([name, rawValue]) => {
+    const value = String(rawValue ?? '');
+    let delimiter;
+    do {
+      delimiter = `pingroom_${randomBytes(24).toString('hex')}`;
+    } while (value.includes(delimiter));
+    // Keep the collision check next to serialization: a delimiter must never
+    // occur in an untrusted value, even though a 192-bit collision is remote.
+    if (value.includes(delimiter)) {
+      fail('could not create a safe GitHub output delimiter');
+    }
+    return `${name}<<${delimiter}\n${value}\n${delimiter}\n`;
+  });
+
+  try {
+    appendFileSync(path, blocks.join(''), { encoding: 'utf8' });
+  } catch {
+    fail('could not write GitHub outputs');
+  }
+}
+
 // Long-poll GET /handoffs/{id}/wait until the handoff leaves open/pending, then
 // print it and return the state's exit code. Reuses the shared bounded hold.
-async function waitForHandoff(id, args, { token, apiBase }) {
+async function waitForHandoff(id, args, { token, apiBase }, initialDeliveryState) {
   let hold = args.timeout !== undefined ? Number(args.timeout) : 20;
   if (!Number.isFinite(hold) || hold < 0) fail('--timeout must be a non-negative integer', EXIT.USAGE);
   hold = Math.min(hold, 25);
@@ -599,9 +689,16 @@ async function waitForHandoff(id, args, { token, apiBase }) {
       fail(`wait failed: ${detail}`);
     }
     if (json && json.state && !HANDOFF_PENDING.has(json.state)) {
+      // Read/wait responses intentionally carry delivery_state=null. Preserve
+      // the create response's durable delivery result so --wait callers and
+      // the GitHub Action do not lose it at the terminal read boundary.
+      const resolved = json.delivery_state == null && initialDeliveryState != null
+        ? { ...json, delivery_state: initialDeliveryState }
+        : json;
+      if (args.github_output !== undefined) writeGitHubHandoffOutputs(args.github_output, resolved);
       if (args.json) process.stdout.write(`${text}\n`);
-      else printHandoff(json);
-      return exitForHandoffState(json.state);
+      else printHandoff(resolved);
+      return exitForHandoffState(resolved.state);
     }
     // Still open/pending at the hold timeout — poll again.
   }
@@ -620,6 +717,9 @@ async function handoff(args) {
   const isQuestion = Boolean(args.question) || Boolean(options);
   if (isQuestion && (!options || options.length < 2)) {
     fail('a question handoff needs at least 2 --option values', EXIT.USAGE);
+  }
+  if (isQuestion && options && options.length > 4) {
+    fail('a question handoff accepts at most 4 --option values', EXIT.USAGE);
   }
   if (!isQuestion && options) {
     fail('--option requires --question', EXIT.USAGE);
@@ -670,12 +770,13 @@ async function handoff(args) {
   }
 
   if (!args.wait) {
+    if (args.github_output !== undefined) writeGitHubHandoffOutputs(args.github_output, json);
     if (args.json) process.stdout.write(`${text}\n`);
     else printHandoff(json);
     return EXIT.OK;
   }
 
-  return waitForHandoff(json.id, args, { token, apiBase });
+  return waitForHandoff(json.id, args, { token, apiBase }, json.delivery_state);
 }
 
 const COMMANDS = {
@@ -686,6 +787,7 @@ const COMMANDS = {
   cancel: (rest) => cancel(parseQArgs(rest)),
   list: (rest) => list(parseQArgs(rest)),
   handoff: (rest) => handoff(parseHandoffArgs(rest)),
+  handoffs: (rest) => listHandoffs(parseQArgs(rest)),
 };
 
 function waitFrom(handler, rest) {

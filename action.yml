@@ -43,7 +43,7 @@ inputs:
     required: false
     default: 'false'
   options:
-    description: 'For a question handoff: newline- or comma-separated value:label options, e.g. "deploy:Deploy\nhold:Hold". At least 2.'
+    description: 'For a question handoff: newline- or comma-separated value:label options, e.g. "deploy:Deploy\nhold:Hold". Between 2 and 4.'
     required: false
   target:
     description: 'For a handoff: recipient — "me" (default) or a specific user uuid.'
@@ -82,7 +82,7 @@ outputs:
     description: 'The chosen value of an answered question handoff (any value, including a negative one).'
     value: ${{ steps.pingroom.outputs.answer }}
   delivery-state:
-    description: 'Delivery state of the handoff: enqueued | pending.'
+    description: 'Initial delivery state of the handoff: enqueued | pending | failed.'
     value: ${{ steps.pingroom.outputs.delivery-state }}
 
 runs:
@@ -113,7 +113,7 @@ runs:
         PR_WAIT: ${{ inputs.wait }}
       run: |
         set -o pipefail
-        CLI="npx --yes @pingroom/cli@0.2.0"
+        CLI="npx --yes @pingroom/cli@0.3.0"
 
         if [ "$PR_HANDOFF" = "true" ]; then
           args=(handoff -m "$PR_MESSAGE")
@@ -134,21 +134,13 @@ runs:
           [ -n "$PR_DATA" ]            && args+=(-d "$PR_DATA")
           [ "$PR_WAIT" = "true" ]      && args+=(--wait)
 
-          # The handoff command prints machine-readable `key=value` lines. Capture
-          # them, forward each to $GITHUB_OUTPUT, and preserve the CLI exit code so
-          # the workflow step still fails on expiry (3) / error (1) etc.
-          out="$($CLI "${args[@]}")"
+          # The CLI writes only its fixed output allowlist using GitHub's
+          # random-delimiter multiline protocol. Never parse untrusted answer
+          # text from stdout into $GITHUB_OUTPUT.
+          set +e
+          $CLI "${args[@]}" --github-output "$GITHUB_OUTPUT"
           code=$?
-          printf '%s\n' "$out"
-          while IFS='=' read -r key value; do
-            case "$key" in
-              id)             echo "handoff-id=$value"      >> "$GITHUB_OUTPUT" ;;
-              state)          echo "state=$value"           >> "$GITHUB_OUTPUT" ;;
-              acked-by)       echo "acknowledged-by=$value" >> "$GITHUB_OUTPUT" ;;
-              answer)         echo "answer=$value"          >> "$GITHUB_OUTPUT" ;;
-              delivery-state) echo "delivery-state=$value"  >> "$GITHUB_OUTPUT" ;;
-            esac
-          done <<< "$out"
+          set -e
           exit $code
         fi
 

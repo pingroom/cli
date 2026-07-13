@@ -4,7 +4,8 @@ import { spawnSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'bin', 'pingroom.js');
@@ -34,12 +35,25 @@ test('GitHub Action exposes handoff inputs and outputs', () => {
   assert.match(action, /^  acknowledged-by:/m);
   assert.match(action, /^  answer:/m);
   assert.match(action, /^  delivery-state:/m);
-  // The runner forwards the CLI's key=value lines to $GITHUB_OUTPUT and
-  // preserves the CLI exit code so expiry/error still fails the step.
+  // The CLI owns GitHub's output-file protocol; the shell never interprets
+  // untrusted answer stdout as output commands.
   assert.match(action, /args=\(handoff -m "\$PR_MESSAGE"\)/);
   assert.match(action, /Idempotency-Key/i);
-  assert.match(action, /handoff-id=\$value.*>> "\$GITHUB_OUTPUT"/);
+  assert.match(action, /--github-output "\$GITHUB_OUTPUT"/);
+  assert.doesNotMatch(action, /while IFS=['"]?=['"]? read/);
+  assert.doesNotMatch(action, />>\s*"\$GITHUB_OUTPUT"/);
   assert.match(action, /exit \$code/);
+  assert.match(action, /@pingroom\/cli@0\.3\.0/);
+});
+
+test('package version matches the GitHub Action CLI pin', () => {
+  const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(__dirname, '..', 'package-lock.json'), 'utf8'));
+  const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
+  assert.equal(pkg.version, '0.3.0');
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.match(action, new RegExp(`@pingroom/cli@${pkg.version.replaceAll('.', '\\.')}`));
 });
 
 /**
@@ -405,6 +419,24 @@ test('ask --wait blocks and prints the chosen value with exit 0', async () => {
   }
 });
 
+test('ask --wait --json prints the terminal response as JSON', async () => {
+  const terminal = { id: 'q_json', state: 'answered', answer: { value: 'approve', label: 'Approve' } };
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_json', state: 'pending' } }),
+    'GET /api/agent/questions/q_json/wait': () => ({ status: 200, body: terminal }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl,
+      '--wait', '--json', '-p', 'Deploy?',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(JSON.parse(stdout), terminal);
+  } finally {
+    server.close();
+  }
+});
+
 test('ask --wait exits 3 on expiry', async () => {
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_3', state: 'pending' } }),
@@ -457,6 +489,111 @@ test('cancel withdraws a pending question', async () => {
 // handoff
 // ---------------------------------------------------------------------------
 
+function parseGitHubOutputFile(raw) {
+  const lines = raw.split('\n');
+  const outputs = {};
+  for (let i = 0; i < lines.length;) {
+    if (lines[i] === '') {
+      i += 1;
+      continue;
+    }
+    const header = /^([A-Za-z0-9_-]+)<<(.+)$/.exec(lines[i]);
+    assert.ok(header, `invalid GitHub output header: ${lines[i]}`);
+    const [, name, delimiter] = header;
+    i += 1;
+    const valueLines = [];
+    while (i < lines.length && lines[i] !== delimiter) {
+      valueLines.push(lines[i]);
+      i += 1;
+    }
+    assert.equal(lines[i], delimiter, `missing delimiter for ${name}`);
+    i += 1;
+    outputs[name] = valueLines.join('\n');
+  }
+  return outputs;
+}
+
+test('github output protocol contains malicious multiline answers without output injection', async () => {
+  const maliciousAnswer = 'ok\nstate=acked\r\nanswer=owned\npingroom_0123456789abcdef\nEOF_like';
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/handoffs': () => ({
+      status: 201,
+      body: { id: 'h_malicious', kind: 'question', state: 'pending' },
+    }),
+    'GET /api/agent/handoffs/h_malicious/wait': () => ({
+      status: 200,
+      body: {
+        id: 'h_malicious',
+        kind: 'question',
+        state: 'answered',
+        answer: { value: maliciousAnswer, label: 'Untrusted' },
+      },
+    }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-cli-output-'));
+  const outputPath = join(dir, 'github-output');
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'handoff', '--token', 'tok', '--api', baseUrl, '--wait',
+      '--github-output', outputPath, '-m', 'Ship?', '--question', '-o', 'ok:OK', '-o', 'hold:Hold',
+    ]);
+    assert.equal(status, 0, stderr);
+
+    // Preserve the normal key=value stdout contract for non-Action callers.
+    assert.match(stdout, /answer=ok\nstate=acked\r\nanswer=owned/);
+
+    const raw = readFileSync(outputPath, 'utf8');
+    assert.match(raw, /^handoff-id<<pingroom_[0-9a-f]{48}$/m);
+    const outputs = parseGitHubOutputFile(raw);
+    assert.deepEqual(Object.keys(outputs).sort(), ['answer', 'handoff-id', 'state']);
+    assert.equal(outputs['handoff-id'], 'h_malicious');
+    assert.equal(outputs.state, 'answered');
+    assert.equal(outputs.answer, maliciousAnswer);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('handoffs lists recent history with state=all without changing question list', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'GET /api/agent/handoffs': () => ({ status: 200, body: { handoffs: [
+      { id: 'h_done', kind: 'question', state: 'answered', prompt: 'Ship?', answer: { value: 'hold' } },
+      { id: 'h_open', kind: 'ack', state: 'open', prompt: 'Review this' },
+    ] } }),
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'handoffs', '--token', 'tok', '--api', baseUrl, '--state', 'all',
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /h_done\s+question\s+answered\s+Ship\? → hold/);
+    assert.match(stdout, /h_open\s+ack\s+open\s+Review this/);
+    assert.equal(received[0].path, '/api/agent/handoffs');
+    assert.match(received[0].query, /(?:^|&)state=all(?:&|$)/);
+  } finally {
+    server.close();
+  }
+});
+
+test('handoffs defaults to open and rejects question-only states', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'GET /api/agent/handoffs': () => ({ status: 200, body: { handoffs: [] } }),
+  });
+  try {
+    const open = await runAsync(['handoffs', '--token', 'tok', '--api', baseUrl]);
+    assert.equal(open.status, 0);
+    assert.equal(open.stdout.trim(), 'no handoffs');
+    assert.match(received[0].query, /(?:^|&)state=open(?:&|$)/);
+  } finally {
+    server.close();
+  }
+
+  const invalid = run(['handoffs', '--token', 'tok', '--state', 'answered']);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /--state must be 'open' or 'all'/);
+});
+
 test('exit 2: handoff without --message', () => {
   const { status, stderr } = run(['handoff', '--token', 't']);
   assert.equal(status, 2);
@@ -480,6 +617,15 @@ test('exit 2: handoff --option without --question is still a question (needs 2)'
   const { status, stderr } = run(['handoff', '--token', 't', '-m', 'x', '-o', 'solo']);
   assert.equal(status, 2);
   assert.match(stderr, /at least 2 --option/);
+});
+
+test('exit 2: handoff rejects more than 4 options', () => {
+  const { status, stderr } = run([
+    'handoff', '--token', 't', '-m', 'x', '--question',
+    '-o', 'one', '-o', 'two', '-o', 'three', '-o', 'four', '-o', 'five',
+  ]);
+  assert.equal(status, 2);
+  assert.match(stderr, /at most 4 --option/);
 });
 
 test('exit 2: handoff bad --urgency', () => {
@@ -559,15 +705,59 @@ test('handoff sends the Idempotency-Key header and full question body', async ()
 test('handoff --wait exits 0 on acked and prints acked-by', async () => {
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/handoffs': () => ({ status: 201, body: { id: 'h_3', state: 'open', delivery_state: 'enqueued' } }),
-    'GET /api/agent/handoffs/h_3/wait': () => ({ status: 200, body: { id: 'h_3', state: 'acked', acked_by: 'u-7', acked_at: '2026-07-12T00:00:00Z' } }),
+    'GET /api/agent/handoffs/h_3/wait': () => ({ status: 200, body: { id: 'h_3', state: 'acked', delivery_state: null, acked_by: { id: 'u-7', display_name: 'Maya' }, acked_at: '2026-07-12T00:00:00Z' } }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-cli-delivery-state-'));
+  const outputPath = join(dir, 'github-output');
+  try {
+    const { status, stdout } = await runAsync([
+      'handoff', '--token', 'tok', '--api', baseUrl, '--wait',
+      '--github-output', outputPath, '-m', 'Ack?',
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /^state=acked$/m);
+    assert.match(stdout, /^delivery-state=enqueued$/m);
+    assert.match(stdout, /^acked-by=u-7$/m);
+    const outputs = parseGitHubOutputFile(readFileSync(outputPath, 'utf8'));
+    assert.equal(outputs['delivery-state'], 'enqueued');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('handoff --wait --json preserves the raw terminal response', async () => {
+  const terminal = { id: 'h_json', state: 'acked', delivery_state: null, acked_by: { id: 'u-8' } };
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/handoffs': () => ({
+      status: 201,
+      body: { id: 'h_json', state: 'open', delivery_state: 'enqueued' },
+    }),
+    'GET /api/agent/handoffs/h_json/wait': () => ({ status: 200, body: terminal }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'handoff', '--token', 'tok', '--api', baseUrl, '--wait', '--json', '-m', 'Ack?',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(JSON.parse(stdout), terminal);
+  } finally {
+    server.close();
+  }
+});
+
+test('handoff prints an empty acked-by when the server redacts the actor id', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/handoffs': () => ({ status: 201, body: { id: 'h_redacted', state: 'open' } }),
+    'GET /api/agent/handoffs/h_redacted/wait': () => ({ status: 200, body: { id: 'h_redacted', state: 'acked', acked_by: { id: null, display_name: null } } }),
   });
   try {
     const { status, stdout } = await runAsync([
       'handoff', '--token', 'tok', '--api', baseUrl, '--wait', '-m', 'Ack?',
     ]);
     assert.equal(status, 0);
-    assert.match(stdout, /^state=acked$/m);
-    assert.match(stdout, /^acked-by=u-7$/m);
+    assert.match(stdout, /^acked-by=$/m);
+    assert.doesNotMatch(stdout, /\[object Object\]/);
   } finally {
     server.close();
   }

@@ -1,6 +1,6 @@
 {
   "name": "@pingroom/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Send PingRoom pings and ask humans blocking questions from CI, scripts, and agents.",
   "type": "module",
   "bin": {

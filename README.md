@@ -10,7 +10,8 @@ npx @pingroom/cli ping -w "$PINGROOM_WEBHOOK_URL" -m "Deploy succeeded ✅"
 ```
 
 Commands: `ping` (send), `ask` (ask a human), `watch` (block on an existing
-question), `list`, `cancel`, `handoff` (hand a decision to a specific human).
+question), `list`, `cancel`, `handoff` (hand a decision to a specific human),
+and `handoffs` (list open or recent Handoffs).
 Run `pingroom --help` for the full reference.
 
 ## Getting a webhook URL
@@ -173,13 +174,21 @@ pingroom handoff --token "$PINGROOM_TOKEN" --wait \
 # exit 3 = expired    exit 4 = cancelled / recipient not ready    exit 1 = error
 ```
 
-Flags: `--question` (or any `-o value:label`, 2+) makes it a question, else it's
+Flags: `--question` (or any `-o value:label`, 2–4) makes it a question, else it's
 an ack. `--target me|<uuid>` picks the recipient. `--expires-in <s>` (120–86400,
 default 900). `--urgency active|passive`. `--idempotency-key <key>` is sent as
 the `Idempotency-Key` header so network retries collapse to one handoff (the
 server 409s on a key reused with a different payload). `--correlation-id` /
 `--reply-to` / `-d '{...}'` are echoed back. Add `--wait` to long-poll to a
 terminal state; without it the command prints the created handoff and returns 0.
+
+List unresolved Handoffs or bounded recent history without changing the legacy
+question-only `list` command:
+
+```bash
+pingroom handoffs --token "$PINGROOM_TOKEN"                 # open only
+pingroom handoffs --token "$PINGROOM_TOKEN" --state all     # recent, up to 200 per kind
+```
 
 A negative answer (`hold`, `deny`, …) is a **successful** `answered` state and
 exits `0` — branch on the printed `answer=` line, not on the exit code.
