@@ -18,7 +18,12 @@
 // 4 cancelled/recipient-not-ready.
 
 import { randomBytes } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+
+// Kept in lockstep with package.json / package-lock.json / action.yml (a test
+// asserts the GitHub Action pins this exact version). `hook --print-config`
+// emits an `npx @pingroom/cli@<VERSION>` command, so it must match too.
+const VERSION = '0.4.0';
 
 const DEFAULT_API = process.env.PINGROOM_API_URL || 'https://api.pingroom.io';
 
@@ -36,6 +41,8 @@ Commands:
   handoff  Hand a decision (ack or question) to a specific human; with --wait,
            block until they acknowledge or answer
   handoffs List the agent's open handoffs or bounded recent history
+  hook     Claude Code hook: ping on Stop/Notification, and route tool
+           permission prompts to a PingRoom question you answer from your phone
 
 ping options:
   -m, --message <text>   Ping body text (required)
@@ -83,6 +90,12 @@ handoff options (agent token required; consent scope pingroom:handoffs:create):
 handoffs options (agent token required; consent scope pingroom:handoffs:create):
       --state <s>        open | all (default open)
 
+hook options (agent token required; reads a Claude Code hook event on stdin):
+      --room <code>      Room invite code (or env PINGROOM_ROOM)
+      --ttl <seconds>    Approval-question expiry for PreToolUse (default 900)
+      --quiet            Suppress the informational stderr lines
+      --print-config     Print a ready-to-paste ~/.claude/settings.json block
+
 Shared:
       --token <token>    Agent access token (or env PINGROOM_TOKEN)
       --api <url>        API base URL (default ${DEFAULT_API}; env PINGROOM_API_URL)
@@ -114,6 +127,9 @@ Examples:
   # -> exit 0 (answered, any value incl. 'hold'); 3 expired; 4 recipient-not-ready
 
   pingroom handoffs --token "$T" --state all   # recent history (up to 200/kind)
+
+  # Connect Claude Code to your phone (prints the settings.json to paste):
+  pingroom hook --print-config
 
 Security:
   Prefer the env vars (PINGROOM_WEBHOOK_URL / PINGROOM_TOKEN) over passing
@@ -779,6 +795,326 @@ async function handoff(args) {
   return waitForHandoff(json.id, args, { token, apiBase }, json.delivery_state);
 }
 
+// --- hook (Claude Code integration) ----------------------------------------
+//
+// A single command wired into several Claude Code hook events. It reads the
+// hook's JSON payload on stdin and switches on `hook_event_name`:
+//   Stop / SubagentStop / SessionEnd  -> ping the room ("Claude finished")
+//   Notification                      -> ping the room (idle / needs-input)
+//   PreToolUse                        -> ask a PingRoom question and gate the
+//                                        tool call on the phone's Approve/Deny.
+//
+// Safety: the hook FAILS OPEN. It never blocks the agent and never
+// auto-approves. Any missing config / network error / non-answer defers to the
+// normal local prompt (PreToolUse -> permissionDecision "ask") and exits 0. It
+// must not call fail() (a non-zero exit — 2 especially — would break the run).
+
+function parseHookArgs(argv) {
+  const args = { _: [] };
+  const alias = {
+    '--room': 'room',
+    '--ttl': 'ttl',
+    '--quiet': 'quiet',
+    '--print-config': 'print_config',
+    '--token': 'token',
+    '--api': 'api',
+    '--json': 'json',
+    '-h': 'help', '--help': 'help',
+  };
+  const booleans = new Set(['quiet', 'print_config', 'json', 'help']);
+
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    const key = alias[token];
+    if (key && booleans.has(key)) {
+      args[key] = true;
+    } else if (key) {
+      const value = argv[++i];
+      if (value === undefined) fail(`option ${token} needs a value`, EXIT.USAGE);
+      args[key] = value;
+    } else if (token.startsWith('-') && token !== '-') {
+      fail(`Unknown option: ${token}`, EXIT.USAGE);
+    } else {
+      args._.push(token);
+    }
+  }
+  return args;
+}
+
+// Read all of stdin as a string. Resolves '' when nothing is piped (TTY), so a
+// stray `pingroom hook` in a terminal is a silent no-op rather than a hang.
+function readStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) { resolve(''); return; }
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', () => resolve(data));
+  });
+}
+
+function truncate(value, max) {
+  const str = String(value ?? '');
+  return str.length <= max ? str : `${str.slice(0, max - 1)}…`;
+}
+
+// A minimal HTTP helper for the hook path that THROWS instead of calling fail(),
+// so every failure funnels into a fail-open decision. Mirrors httpJson's header
+// handling but leaves control flow to the caller.
+async function hookFetch(method, url, { body, token } = {}) {
+  const res = await fetch(url, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON response */ }
+  if (!res.ok) {
+    throw new Error((json && (json.message || json.code)) || `HTTP ${res.status}`);
+  }
+  return json;
+}
+
+// Pull the readable text out of a Claude transcript message's content, which is
+// either a plain string or an array of typed blocks.
+function extractAssistantText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join(' ');
+  }
+  return '';
+}
+
+// Tail a Claude Code transcript (JSONL) and return the last assistant message as
+// a single truncated line. Best-effort: any read/parse failure yields ''.
+function summarizeTranscript(path) {
+  if (!path || typeof path !== 'string') return '';
+  let content;
+  try { content = readFileSync(path, 'utf8'); } catch { return ''; }
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const msg = entry && entry.message;
+    if (!msg || msg.role !== 'assistant') continue;
+    const text = extractAssistantText(msg.content).replace(/\s+/g, ' ').trim();
+    if (text) return truncate(text, 500);
+  }
+  return '';
+}
+
+// A short, single-line description of the tool call for the question prompt.
+// Never emits more than a truncated line, and strips whitespace/newlines so an
+// untrusted command can't reshape the message.
+function summarizeToolInput(input) {
+  if (!input || typeof input !== 'object') return '';
+  let raw = '';
+  if (typeof input.command === 'string') raw = input.command;          // Bash
+  else if (typeof input.file_path === 'string') raw = input.file_path; // Read/Write/Edit
+  else if (typeof input.path === 'string') raw = input.path;
+  else if (typeof input.url === 'string') raw = input.url;             // WebFetch
+  else if (typeof input.pattern === 'string') raw = input.pattern;     // Grep/Glob
+  else { try { raw = JSON.stringify(input); } catch { raw = ''; } }
+  return truncate(String(raw).replace(/\s+/g, ' ').trim(), 160);
+}
+
+function emitPreToolUseDecision(decision, reason) {
+  process.stdout.write(`${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: decision,
+      permissionDecisionReason: reason,
+    },
+  })}\n`);
+}
+
+// Long-poll the wait endpoint until the question leaves `pending`. The server
+// expires it at its ttl, so this always terminates; a mid-poll throw propagates
+// to the caller's fail-open handler.
+async function hookWaitForAnswer(id, { token, apiBase }) {
+  for (;;) {
+    const url = `${apiBase}/api/agent/questions/${encodeURIComponent(id)}/wait?timeout=25`;
+    const json = await hookFetch('GET', url, { token });
+    if (json && json.state && json.state !== 'pending') return json;
+  }
+}
+
+async function hookPreToolUse(event, { token, room, apiBase, args }) {
+  if (!token || !room) {
+    emitPreToolUseDecision('ask', 'PingRoom not configured (set PINGROOM_TOKEN and PINGROOM_ROOM)');
+    return EXIT.OK;
+  }
+
+  const toolName = event.tool_name || 'a tool';
+  const summary = summarizeToolInput(event.tool_input);
+  const prompt = truncate(`Run ${toolName}${summary ? `: ${summary}` : ''}?`, 500);
+
+  let ttl = 900;
+  if (args.ttl !== undefined && /^\d+$/.test(String(args.ttl))) ttl = Number(args.ttl);
+
+  let questionId;
+  let cancelled = false;
+  const cancelQuestion = async () => {
+    if (!questionId || cancelled) return;
+    cancelled = true;
+    try {
+      await hookFetch('POST', `${apiBase}/api/agent/questions/${encodeURIComponent(questionId)}/cancel`, { body: {}, token });
+    } catch { /* best-effort — a leftover question expires on its own ttl */ }
+  };
+  // If the agent aborts the tool call, withdraw the question so it doesn't linger
+  // on the phone. Exit 0 so the abort itself isn't reported as a hook failure.
+  const onSignal = () => { cancelQuestion().finally(() => process.exit(EXIT.OK)); };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+
+  try {
+    const data = { tool_name: String(toolName) };
+    if (event.cwd) data.cwd = String(event.cwd);
+    const created = await hookFetch('POST', `${apiBase}/api/agent/rooms/${encodeURIComponent(room)}/questions`, {
+      token,
+      body: {
+        prompt,
+        context: 'Claude Code',
+        options: [
+          { value: 'allow', label: 'Approve', style: 'primary' },
+          { value: 'deny', label: 'Deny', style: 'danger' },
+        ],
+        ttl,
+        data,
+        ...(event.session_id ? { correlation_id: String(event.session_id) } : {}),
+      },
+    });
+    questionId = created && created.id;
+    if (!questionId) {
+      emitPreToolUseDecision('ask', 'PingRoom did not return a question — deferring to local prompt');
+      return EXIT.OK;
+    }
+
+    const resolved = await hookWaitForAnswer(questionId, { token, apiBase });
+    if (resolved.state === 'answered') {
+      const value = resolved.answer && (resolved.answer.value || resolved.answer.text);
+      if (value === 'allow') { emitPreToolUseDecision('allow', 'Approved via PingRoom'); return EXIT.OK; }
+      if (value === 'deny') { emitPreToolUseDecision('deny', 'Denied via PingRoom'); return EXIT.OK; }
+      emitPreToolUseDecision('ask', `PingRoom answer "${value}" — deferring to local prompt`);
+      return EXIT.OK;
+    }
+    emitPreToolUseDecision('ask', `PingRoom question ${resolved.state} — deferring to local prompt`);
+    return EXIT.OK;
+  } catch (err) {
+    emitPreToolUseDecision('ask', `PingRoom unavailable (${err.message}) — deferring to local prompt`);
+    return EXIT.OK;
+  } finally {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+  }
+}
+
+async function hookNotify(event, name, { token, room, apiBase, args }) {
+  if (!token || !room) {
+    if (!args.quiet) process.stderr.write('pingroom: hook skipped (set PINGROOM_TOKEN and PINGROOM_ROOM)\n');
+    return EXIT.OK;
+  }
+
+  let title;
+  let message;
+  if (name === 'Stop' || name === 'SubagentStop') {
+    title = 'Claude finished';
+    message = summarizeTranscript(event.transcript_path) || 'Session finished — waiting for you.';
+  } else if (name === 'Notification') {
+    message = truncate(event.message || 'Claude is waiting for your input.', 500);
+    // A PreToolUse hook already turns permission prompts into a question; skip
+    // the duplicate "needs your permission" Notification so you aren't paged twice.
+    if (/permission/i.test(message)) return EXIT.OK;
+    title = 'Claude needs you';
+  } else if (name === 'SessionEnd') {
+    if (event.reason === 'clear') return EXIT.OK; // /clear isn't worth a ping
+    title = 'Session ended';
+    message = `Claude Code session ended (${event.reason || 'unknown'}).`;
+  } else {
+    return EXIT.OK; // unknown event — stay silent rather than send noise
+  }
+
+  const data = { event: name };
+  if (event.session_id) data.session_id = String(event.session_id);
+  if (event.cwd) data.cwd = String(event.cwd);
+
+  try {
+    await hookFetch('POST', `${apiBase}/api/agent/rooms/${encodeURIComponent(room)}/notifications`, {
+      token,
+      body: {
+        message,
+        title,
+        data,
+        ...(event.session_id ? { correlation_id: String(event.session_id) } : {}),
+      },
+    });
+    if (!args.quiet) process.stderr.write('pingroom: pinged ✅\n');
+  } catch (err) {
+    // A broken ping must never break the agent — report to stderr and exit 0.
+    if (!args.quiet) process.stderr.write(`pingroom: hook ping failed (${err.message})\n`);
+  }
+  return EXIT.OK;
+}
+
+function printHookConfig() {
+  const command = `npx --yes @pingroom/cli@${VERSION} hook`;
+  const config = {
+    hooks: {
+      Stop: [{ hooks: [{ type: 'command', command }] }],
+      Notification: [{ hooks: [{ type: 'command', command }] }],
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 960 }] }],
+    },
+  };
+  process.stdout.write(
+`# PingRoom × Claude Code — merge this into ~/.claude/settings.json
+#
+# 1. Set your credentials in the environment (e.g. in your shell profile):
+#      export PINGROOM_TOKEN="<your agent token>"
+#      export PINGROOM_ROOM="<room invite code>"
+#
+# 2. Merge the "hooks" block below into ~/.claude/settings.json.
+#      Stop / Notification  -> ping your phone.
+#      PreToolUse (Bash)     -> ask a question you Approve/Deny from the lock
+#                               screen before the command runs. Add or change the
+#                               matcher to gate other tools.
+#
+# If PingRoom is unreachable the hook defers to the normal local prompt — it
+# never auto-approves and never blocks the agent.
+
+${JSON.stringify(config, null, 2)}
+`);
+}
+
+async function hook(args) {
+  if (args.help) { process.stdout.write(`${HELP}\n`); return EXIT.OK; }
+  if (args.print_config) { printHookConfig(); return EXIT.OK; }
+
+  let event = {};
+  const raw = await readStdin();
+  if (raw) { try { event = JSON.parse(raw); } catch { event = {}; } }
+  const name = event.hook_event_name || '';
+
+  const token = args.token || process.env.PINGROOM_TOKEN;
+  const room = args.room || process.env.PINGROOM_ROOM;
+  const apiBase = (args.api || DEFAULT_API).replace(/\/$/, '');
+
+  if (name === 'PreToolUse') {
+    return hookPreToolUse(event, { token, room, apiBase, args });
+  }
+  return hookNotify(event, name, { token, room, apiBase, args });
+}
+
 const COMMANDS = {
   ping: (rest) => ping(parseArgs(rest)),
   ask: (rest) => ask(parseQArgs(rest)),
@@ -788,6 +1124,7 @@ const COMMANDS = {
   list: (rest) => list(parseQArgs(rest)),
   handoff: (rest) => handoff(parseHandoffArgs(rest)),
   handoffs: (rest) => listHandoffs(parseQArgs(rest)),
+  hook: (rest) => hook(parseHookArgs(rest)),
 };
 
 function waitFrom(handler, rest) {

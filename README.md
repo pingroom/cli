@@ -193,6 +193,43 @@ pingroom handoffs --token "$PINGROOM_TOKEN" --state all     # recent, up to 200 
 A negative answer (`hold`, `deny`, …) is a **successful** `answered` state and
 exits `0` — branch on the printed `answer=` line, not on the exit code.
 
+## Claude Code integration (get pinged by your agent)
+
+Wire PingRoom into [Claude Code](https://claude.com/claude-code) hooks so your
+agent pings your phone when it finishes — and asks for your approval, on your
+lock screen, before it runs a command. Approve or Deny with a tap; the agent
+waits for your answer and continues.
+
+Print a ready-to-paste config:
+
+```bash
+pingroom hook --print-config
+```
+
+Then set your credentials and merge the printed `hooks` block into
+`~/.claude/settings.json`:
+
+```bash
+export PINGROOM_TOKEN="<your agent token>"   # a room the agent belongs to
+export PINGROOM_ROOM="<room invite code>"
+```
+
+`pingroom hook` reads the Claude Code hook event on stdin and reacts by event:
+
+| Hook event | What happens |
+| --- | --- |
+| `Stop` / `SubagentStop` | Pings the room with the agent's last message (“Claude finished”). |
+| `Notification` | Pings when the agent is idle or waiting for input (permission prompts are skipped — the `PreToolUse` question already covers those). |
+| `SessionEnd` | Pings when a session ends (except `/clear`). |
+| `PreToolUse` | Asks a PingRoom **question** and gates the tool call on your Approve/Deny tap. Which tools are gated is the settings.json `matcher` (default `Bash`) — not the CLI. |
+
+**It always fails open.** If PingRoom is unreachable, the token/room is missing,
+or the question expires, the hook defers to the normal local prompt
+(`permissionDecision: "ask"`) and exits 0. It never auto-approves and never
+blocks the agent. Because the `PreToolUse` hook holds the tool call open while it
+waits for you, give it a generous `timeout` (the printed config uses 960s) and
+tune the approval-question expiry with `--ttl <seconds>` (default 900).
+
 For a fully typed client, use [`@pingroom/sdk`](https://www.npmjs.com/package/@pingroom/sdk).
 See <https://pingroom.io/connect-mcp.md> to connect Cursor, Claude Desktop, or Claude Code.
 
