@@ -57,15 +57,20 @@ ping options:
 
 ask options (agent token required):
   -p, --prompt <text>    The question a human reads (required)
-  -o, --option <v:label> An answer option; repeat for 2–4. Omit for Approve/Deny
+  -o, --option <v:label[:style]>
+                         An answer option (style: primary|danger|default);
+                         repeat for 2–4. Omit for Approve/Deny
   -c, --context <text>   Secondary line, e.g. a build number (<= 40 chars)
       --scope <s>        Who answers: 'direct' (default) or 'room'
       --target <uuid>    For --scope direct: a specific room member
       --ttl <seconds>    Expiry; omit for the server default (1h; 30..86400)
+      --text-input <ph>  Invite a short typed answer; <ph> is the placeholder
+      --text-max <n>     Max typed-answer length (1..60)
       --wait             Block until answered/expired/cancelled
       --timeout <sec>    Per long-poll hold with --wait/watch (0–30, default 25)
   -d, --data <json>      Structured data object echoed back on the answer
       --correlation-id <id>  Opaque id echoed on every read of this question
+      --reply-to <id>    Id of the ping this question replies to
       --room <code>      Room invite code (required for ask)
 
 list options:
@@ -203,6 +208,9 @@ function parseQArgs(argv) {
     '--ttl': 'ttl',
     '-d': 'data', '--data': 'data',
     '--correlation-id': 'correlation_id',
+    '--reply-to': 'reply_to',
+    '--text-input': 'text_input',
+    '--text-max': 'text_max',
     '--timeout': 'timeout',
     '--state': 'state',
     '--token': 'token',
@@ -438,9 +446,20 @@ function buildOptions(list) {
   return list.map((spec) => {
     const idx = spec.indexOf(':');
     const value = idx === -1 ? spec : spec.slice(0, idx);
-    const label = idx === -1 ? spec : spec.slice(idx + 1);
-    if (!value) fail(`--option must be "value" or "value:label" (got "${spec}")`, EXIT.USAGE);
-    return { value, label };
+    let label = idx === -1 ? spec : spec.slice(idx + 1);
+    if (!value) fail(`--option must be "value", "value:label" or "value:label:style" (got "${spec}")`, EXIT.USAGE);
+    // A trailing :primary|:danger|:default segment styles the button; any other
+    // trailing segment stays part of the label (labels may contain colons).
+    let style;
+    const lastColon = label.lastIndexOf(':');
+    if (lastColon !== -1) {
+      const candidate = label.slice(lastColon + 1);
+      if (candidate === 'primary' || candidate === 'danger' || candidate === 'default') {
+        style = candidate;
+        label = label.slice(0, lastColon);
+      }
+    }
+    return style ? { value, label, style } : { value, label };
   });
 }
 
@@ -511,6 +530,19 @@ async function ask(args) {
     body.ttl = Number(args.ttl);
   }
   if (args.correlation_id !== undefined) body.correlation_id = args.correlation_id;
+  if (args.reply_to !== undefined) body.reply_to = args.reply_to;
+  if (args.text_input !== undefined || args.text_max !== undefined) {
+    const textInput = {};
+    if (args.text_input) textInput.placeholder = String(args.text_input).slice(0, 60);
+    if (args.text_max !== undefined) {
+      const n = Number(args.text_max);
+      if (!/^\d+$/.test(String(args.text_max)) || n < 1 || n > 60) {
+        fail('--text-max must be an integer between 1 and 60', EXIT.USAGE);
+      }
+      textInput.max_length = n;
+    }
+    body.text_input = textInput;
+  }
   if (args.data !== undefined) body.data = parseDataObject(args.data);
 
   const url = `${apiBase}/api/agent/rooms/${encodeURIComponent(room)}/questions`;

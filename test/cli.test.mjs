@@ -43,14 +43,14 @@ test('GitHub Action exposes handoff inputs and outputs', () => {
   assert.doesNotMatch(action, /while IFS=['"]?=['"]? read/);
   assert.doesNotMatch(action, />>\s*"\$GITHUB_OUTPUT"/);
   assert.match(action, /exit \$code/);
-  assert.match(action, /@pingroom\/cli@0\.4\.0/);
+  assert.match(action, /@pingroom\/cli@0\.4\.1/);
 });
 
 test('package version matches the GitHub Action CLI pin', () => {
   const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(join(__dirname, '..', 'package-lock.json'), 'utf8'));
   const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
-  assert.equal(pkg.version, '0.4.0');
+  assert.equal(pkg.version, '0.4.1');
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
   assert.match(action, new RegExp(`@pingroom/cli@${pkg.version.replaceAll('.', '\\.')}`));
@@ -381,6 +381,23 @@ test('exit 2: bad --scope', () => {
   assert.match(stderr, /--scope must be/);
 });
 
+test('exit 2: bad --text-max', () => {
+  const { status, stderr } = run([
+    'ask', '--token', 't', '--room', 'ab12cd', '-p', 'x',
+    '--text-input', 'Why?', '--text-max', 'lots',
+  ]);
+  assert.equal(status, 2);
+  assert.match(stderr, /--text-max must be an integer/);
+});
+
+test('exit 2: --text-max out of range', () => {
+  const { status, stderr } = run([
+    'ask', '--token', 't', '--room', 'ab12cd', '-p', 'x', '--text-max', '61',
+  ]);
+  assert.equal(status, 2);
+  assert.match(stderr, /--text-max must be an integer/);
+});
+
 test('ask (no --wait) creates the question and prints its id', async () => {
   const { server, baseUrl, received } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_1', state: 'pending' } }),
@@ -397,6 +414,33 @@ test('ask (no --wait) creates the question and prints its id', async () => {
       prompt: 'Which env?',
       options: [{ value: 'prod', label: 'Production' }, { value: 'staging', label: 'Staging' }],
       responder_scope: 'room',
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('ask serializes option styles, text_input, and reply_to', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_s', state: 'pending' } }),
+  });
+  try {
+    const { status } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl,
+      '-p', 'Roll back?',
+      '-o', 'yes:Roll back:danger', '-o', 'no:Keep it',
+      '--text-input', 'Why?', '--text-max', '40',
+      '--reply-to', 'ping_9',
+    ]);
+    assert.equal(status, 0);
+    assert.deepEqual(JSON.parse(received[0].body), {
+      prompt: 'Roll back?',
+      options: [
+        { value: 'yes', label: 'Roll back', style: 'danger' },
+        { value: 'no', label: 'Keep it' },
+      ],
+      reply_to: 'ping_9',
+      text_input: { placeholder: 'Why?', max_length: 40 },
     });
   } finally {
     server.close();

@@ -113,7 +113,7 @@ runs:
         PR_WAIT: ${{ inputs.wait }}
       run: |
         set -o pipefail
-        CLI="npx --yes @pingroom/cli@0.4.0"
+        CLI="npx --yes @pingroom/cli@0.4.1"
 
         if [ "$PR_HANDOFF" = "true" ]; then
           args=(handoff -m "$PR_MESSAGE")
