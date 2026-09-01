@@ -257,7 +257,12 @@ it **silently**, `end` closes it with one completion alert.
 The management nouns cover the rest of the agent surface (agent token required;
 `--room` where noted):
 
+Room `--icon` takes a v3 catalog id (`bell`, `globe`, `terminal`, …), never an
+emoji — the server rejects anything off-catalog. Browse ids with
+`pingroom rooms icons`. Quick-action `--icon` is the opposite: it takes an emoji.
+
 ```bash
+pingroom rooms icons                      # browse the v3 room-icon catalog
 pingroom rooms list                       # rooms this account belongs to
 pingroom rooms get GZNFB6BZGJIH
 pingroom rooms create -n "Deploys" --icon bell --color "#e33122"

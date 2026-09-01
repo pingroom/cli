@@ -4235,11 +4235,45 @@ test('each management noun prints its own help', () => {
   }
 });
 
+test('rooms icons prints the catalog grouped by category', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'GET /api/agent/room-icons': () => ({
+      status: 200,
+      body: {
+        version: 4,
+        base_url: 'https://api.example/assets/room-icons/v3',
+        categories: [
+          { id: 'work', label: 'Work', icons: ['briefcase', 'terminal'] },
+          { id: 'home', label: 'Home', icons: ['door'] },
+        ],
+        icons: {},
+      },
+    }),
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'rooms', 'icons', '--token', 'tok', '--api', baseUrl,
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /Work: briefcase terminal/);
+    assert.match(stdout, /Home: door/);
+    assert.equal(received[0].auth, 'Bearer tok');
+  } finally {
+    server.close();
+  }
+});
+
+test('rooms create without an icon points at the catalog command', () => {
+  const { status, stderr } = run(['rooms', 'create', '-n', 'Deploys', '--token', 'x'.repeat(40)]);
+  assert.equal(status, 2);
+  assert.match(stderr, /pingroom rooms icons/);
+});
+
 test('management nouns fail as usage errors without a sub-command or token', () => {
   // Unknown sub-command → usage, before any credential is consulted.
   const bad = run(['rooms', 'destroy']);
   assert.equal(bad.status, 2);
-  assert.match(bad.stderr, /usage: pingroom rooms <list\|get\|create\|join>/);
+  assert.match(bad.stderr, /usage: pingroom rooms <list\|get\|create\|join\|icons>/);
 
   // Known sub-command with no credential → the shared agent-token usage error.
   const noToken = run(['rooms', 'list']);
