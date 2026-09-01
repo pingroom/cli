@@ -4499,7 +4499,15 @@ test('actions set validates the slot and required fields locally', () => {
 
   const missing = run(['actions', 'set', '2', '--token', 'x'.repeat(40), '--room', 'ABC123']);
   assert.equal(missing.status, 2);
-  assert.match(missing.stderr, /needs --label and --icon/);
+  assert.match(missing.stderr, /needs --label \(may be empty\) and --icon/);
+
+  // A Ping's title is optional — the emoji can be the whole name — so an empty
+  // --label is a value, not a missing flag. Only the icon is still mandatory.
+  const noIcon = run([
+    'actions', 'set', '2', '--token', 'x'.repeat(40), '--room', 'ABC123', '--label', '',
+  ]);
+  assert.equal(noIcon.status, 2);
+  assert.match(noIcon.stderr, /needs --label \(may be empty\) and --icon/);
 });
 
 // --------------------------------------------------------------- skills
