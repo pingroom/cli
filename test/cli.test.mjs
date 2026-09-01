@@ -4875,3 +4875,71 @@ test('reconnect refuses to send the stored credential to another origin', async 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+// --- management output reads the server's actual response shape -------------
+//
+// The agent REST routes answer with the record FLAT (WebhookController::store
+// returns `[...$webhook->toArray(), 'webhook_url' => …]`, RoomMemberController
+// returns the room itself). Reading a nested `json.webhook` / `json.room` that
+// the server never sends printed a bare "created" and swallowed the trigger
+// URL — the one credential `webhooks create` exists to hand over.
+
+test('webhooks create prints the flat trigger url the server returns', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'wh-1',
+        name: 'Deploy',
+        enabled: true,
+        webhook_url: `${baseUrl}/api/webhooks/ab12cd/s3cr3t`,
+      }));
+    });
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'webhooks', 'create', '--name', 'Deploy',
+      '--room', 'ab12cd', '--token', 'x'.repeat(40), '--api', baseUrl,
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /created wh-1/);
+    assert.match(stdout, /\/api\/webhooks\/ab12cd\/s3cr3t/);
+  } finally {
+    server.close();
+  }
+});
+
+test('rooms join prints the joined room name from the flat response', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: 'room-1', invite_code: 'ab12cd', name: 'Deploy Alerts' }));
+    });
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'rooms', 'join', 'ab12cd', '--token', 'x'.repeat(40), '--api', baseUrl,
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /joined Deploy Alerts/);
+  } finally {
+    server.close();
+  }
+});
+
+// The ordinary rooms:write scope creates a MINIMAL private room — the server
+// marks `description` prohibited there (AgentRoomScopeIsolationTest pins it as
+// an administrative field) and answers 422. Fail with a usage error instead of
+// posting a request that cannot succeed.
+test('rooms create refuses --description on a private room', () => {
+  const { status, stderr } = run([
+    'rooms', 'create', '-n', 'Deploys', '--icon', 'bell', '--color', '#e33122',
+    '--description', 'CI alerts', '--token', 'x'.repeat(40),
+  ]);
+  assert.equal(status, 2);
+  assert.match(stderr, /--description is only accepted on a public room/);
+});
