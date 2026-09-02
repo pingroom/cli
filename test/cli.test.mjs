@@ -3487,7 +3487,10 @@ test('a transient 502, 429 or dropped connection does not abandon the pairing wa
   }
 });
 
-test('401/403/404 during the pairing poll still fail immediately', async () => {
+test('401/403/404 EARLY in the pairing poll still fail immediately', async () => {
+  // A credential minted seconds ago being rejected means the request is wrong
+  // (bad --api, not a PingRoom host) — not that the window lapsed. Reporting
+  // that as "expired" would hide a real fault behind an unwinnable retry.
   for (const httpStatus of [401, 403, 404]) {
     const home = newHome();
     const stub = await flakyPairingServer([{ httpStatus, body: { message: 'gone' } }]);
@@ -4328,6 +4331,95 @@ test('pair leaves a stored credential untouched when the link expires', async ()
     assert.equal(status, 3);
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'old_tok');
     assert.match(stdout, /Kept your current connection/);
+    assert.ok(!stub.received.some((r) => r.path === '/api/agent/auth/revoke'));
+  } finally {
+    stub.server.close();
+  }
+});
+
+test('an unapproved pairing reports expiry, not an auth error', async () => {
+  // Observed live 2026-09-02: nobody approved inside the window, and the last
+  // poll 401'd because the pre-claim credential this loop authenticates with
+  // expires on the same 900s clock as the pairing token. That surfaced as
+  // "pairing failed: Bearer credential is missing or invalid", exit 1, plus a
+  // hint to run reconnect — three wrong things for "nobody tapped it yet".
+  const home = newHome();
+  // One pending poll, then the 401 — with a 2s window and the 1s minimum poll
+  // interval, the rejection lands in the second half, which is where a real
+  // unapproved pairing 401s (the pre-claim credential ages out with the link).
+  const stub = await flakyPairingServer(
+    [
+      { body: { status: 'pending' } },
+      { httpStatus: 401, body: { message: 'Bearer credential is missing or invalid.' } },
+    ],
+    { pairStart: { expires_in: 2, poll_interval_ms: 1000 } },
+  );
+  try {
+    const { status, stdout, stderr } = await runAsync(
+      ['pair', '--api', stub.baseUrl],
+      { PINGROOM_HOME: home },
+      { stdin: '', timeoutMs: 15000 },
+    );
+    assert.equal(status, 3, 'an expired link is exit 3, not a generic failure');
+    assert.match(stdout, /That code expired/);
+    assert.match(stdout, /pingroom pair" again/);
+    assert.doesNotMatch(stderr, /Bearer credential/, 'the raw auth error must not surface');
+    assert.doesNotMatch(stderr, /reconnect/, 'there is no stored credential to reconnect');
+    assert.ok(!existsSync(join(home, 'credentials.json')));
+  } finally {
+    stub.server.close();
+  }
+});
+
+test('pair --json reports a lapsed window as an expired event', async () => {
+  const home = newHome();
+  // One pending poll, then the 401 — with a 2s window and the 1s minimum poll
+  // interval, the rejection lands in the second half, which is where a real
+  // unapproved pairing 401s (the pre-claim credential ages out with the link).
+  const stub = await flakyPairingServer(
+    [
+      { body: { status: 'pending' } },
+      { httpStatus: 401, body: { message: 'Bearer credential is missing or invalid.' } },
+    ],
+    { pairStart: { expires_in: 2, poll_interval_ms: 1000 } },
+  );
+  try {
+    const { status, stdout } = await runAsync(
+      ['pair', '--api', stub.baseUrl, '--json'],
+      { PINGROOM_HOME: home },
+      { stdin: '', timeoutMs: 15000 },
+    );
+    assert.equal(status, 3);
+    const events = stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.at(-1).event, 'expired');
+  } finally {
+    stub.server.close();
+  }
+});
+
+test('reconnect also reports a lapsed window as expiry, keeping the old credential', async () => {
+  // Same root cause on the interactive path, which shares connectByPairing.
+  const home = newHome();
+  // One pending poll, then the 401 — with a 2s window and the 1s minimum poll
+  // interval, the rejection lands in the second half, which is where a real
+  // unapproved pairing 401s (the pre-claim credential ages out with the link).
+  const stub = await flakyPairingServer(
+    [
+      { body: { status: 'pending' } },
+      { httpStatus: 401, body: { message: 'Bearer credential is missing or invalid.' } },
+    ],
+    { pairStart: { expires_in: 2, poll_interval_ms: 1000 } },
+  );
+  try {
+    seedCredential(home, { token: 'old_tok', api_url: stub.baseUrl });
+    const { status, stdout } = await runAsync(
+      ['reconnect', '--api', stub.baseUrl],
+      { PINGROOM_HOME: home, PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test', COLUMNS: '120' },
+      { stdin: 'n\n', timeoutMs: 20000 },
+    );
+    assert.equal(status, 3);
+    assert.match(stdout, /Kept your current connection/);
+    assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'old_tok');
     assert.ok(!stub.received.some((r) => r.path === '/api/agent/auth/revoke'));
   } finally {
     stub.server.close();
