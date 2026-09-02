@@ -41,7 +41,7 @@ question), `list`, `cancel`, `handoff` (hand a decision to a specific human),
 `handoffs` (list open or recent Handoffs), `listen` (hear pings as they land),
 `live` (lock-screen progress card),
 `hook` (Claude Code), `mcp` (client setup), `activate` (send an optional test
-Question), `config`, and `logout`.
+Question), `pair` (connect a machine with no terminal), `config`, and `logout`.
 Run `pingroom --help` for the full reference.
 
 ## Connecting
@@ -65,6 +65,35 @@ $ pingroom
 Approving on the phone is the whole ceremony — connecting sends nothing else to
 your phone. The status line reflects the grant: `→ #Project X` for one room,
 `→ #Project X +2 more` for several, `→ all rooms` when you granted every room.
+
+### Headless pairing (daemons, containers, OpenClaw)
+
+A machine with no terminal cannot show a QR, so `pingroom pair` prints the
+approval link and waits for it instead. Nothing prompts, nothing draws, and an
+open stdin never holds it:
+
+```
+$ pingroom pair
+  Open: https://pingroom.io/app/agents/pair?token=…
+  Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X
+```
+
+Exit 0 once paired; exit 3 if the 15-minute link expired — run it again for a
+fresh one. It re-pairs too: when a credential already exists the new one is
+saved first, then the old one is revoked.
+
+For a supervisor that reads the link out of a log, `--json` makes stdout one
+JSON object per line (the credential is never printed):
+
+```
+$ pingroom pair --json
+{"event":"pair_url","pair_url":"https://…","expires_in":900,"poll_interval_ms":1500}
+{"event":"connected","handle":"agt_ab12cd34ef","room":{…},"room_access":"selected",…}
+```
+
+Give each service user its own `PINGROOM_HOME`; the credential is written
+`0600` at `$PINGROOM_HOME/credentials.json`. In CI, prefer `PINGROOM_TOKEN`
+over pairing — there is nobody to approve a link.
 
 ## Proving the round-trip (optional)
 
@@ -656,6 +685,10 @@ For a fully typed client, use [`@pingroom/sdk`](https://www.npmjs.com/package/@p
 See <https://pingroom.io/connect-mcp.md> for the complete MCP and OAuth guide.
 
 ## Agent skills
+
+Running under OpenClaw instead of Claude Code? See
+https://pingroom.io/connect-openclaw.md for the skill and headless pairing.
+
 
 Two ready-to-install [Claude Code skills](https://github.com/pingroom/skills)
 teach an agent when and how to reach a human — `pingroom-mcp` for conversational
