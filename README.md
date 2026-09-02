@@ -58,7 +58,7 @@ $ pingroom
   Choose [1]:
 
   [QR]
-  Or open: https://pingroom.io/app/agents/pair?token=…
+  Or open: https://api.pingroom.io/pair?token=…
   Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X +2 more
 ```
 
@@ -74,7 +74,7 @@ open stdin never holds it:
 
 ```
 $ pingroom pair
-  Open: https://pingroom.io/app/agents/pair?token=…
+  Open: https://api.pingroom.io/pair?token=…
   Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X
 ```
 

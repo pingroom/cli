@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as parserModule from '../lib/parser.js';
+import { pairingQrUrl } from '../lib/commands/connect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'bin', 'pingroom.js');
@@ -203,6 +204,19 @@ test('every flag the GitHub Action passes is one the CLI parser accepts', () => 
       );
     }
   }
+});
+
+test('pairing QR prefers the native app URL and falls back for older servers', () => {
+  const browserUrl = `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`;
+  const appUrl = `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`;
+
+  assert.equal(pairingQrUrl({ pair_url: browserUrl, pair_qr_url: appUrl }), appUrl);
+  assert.equal(pairingQrUrl({ pair_url: browserUrl }), browserUrl);
+  assert.equal(pairingQrUrl({ pair_url: browserUrl, pair_qr_url: '' }), browserUrl);
+  assert.doesNotMatch(
+    pairingQrUrl({ pair_url: browserUrl, pair_qr_url: `${appUrl}\u001b[2J` }),
+    /\u001b/,
+  );
 });
 
 // `ask`, `context`, `timeout` and the `question-id` output landed in this
@@ -2378,7 +2392,8 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
           status: 200,
           body: {
             pair_token: 'p'.repeat(64),
-            pair_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
+            pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
+            pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
             expires_in: 900,
             poll_interval_ms: 10,
           },
@@ -2732,7 +2747,7 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     assert.equal(status, 0);
     // The QR itself, then the URL fallback, then the confirmation.
     assert.match(stdout, /[█▄▀]{4}/);
-    assert.match(stdout, /Or open: https:\/\/pingroom\.io\/app\/agents\/pair\?token=p{64}/);
+    assert.match(stdout, /Or open: https:\/\/api\.pingroom\.io\/pair\?token=p{64}/);
     assert.match(stdout, /✓ Connected as @agt_ab12cd34ef → #Project X/);
     // Connecting is the whole ceremony: the approval the human just tapped IS
     // the round-trip, so nothing else is sent to their phone.
@@ -3121,7 +3136,7 @@ test('a narrow terminal degrades to the pair URL alone', async () => {
     );
     assert.equal(status, 0);
     assert.doesNotMatch(stdout, /[█▄▀]/);
-    assert.match(stdout, /Open: https:\/\/pingroom\.io\/app\/agents\/pair/);
+    assert.match(stdout, /Open: https:\/\/api\.pingroom\.io\/pair/);
     assert.match(stdout, /✓ Connected as/);
   } finally {
     server.close();
@@ -4235,7 +4250,7 @@ test('pair prints the approval URL and pairs with no TTY, no QR, and no prompt',
       { stdin: '', timeoutMs: 20000 },
     );
     assert.equal(status, 0);
-    assert.match(stdout, /Open: https:\/\/pingroom\.io\/app\/agents\/pair/);
+    assert.match(stdout, /Open: https:\/\/api\.pingroom\.io\/pair/);
     assert.doesNotMatch(stdout, /[█▄▀]/, 'no QR may be drawn without a terminal');
     assert.doesNotMatch(stdout, /Choose \[1\]|fresh QR/, 'nothing may prompt');
 
@@ -4457,7 +4472,7 @@ test('pair --json streams pair_url first and connected last, and never the token
     const lines = stdout.trim().split('\n').filter(Boolean);
     const events = lines.map((line) => JSON.parse(line)); // every line must parse
     assert.equal(events[0].event, 'pair_url');
-    assert.match(events[0].pair_url, /^https:\/\/pingroom\.io\/app\/agents\/pair/);
+    assert.match(events[0].pair_url, /^https:\/\/api\.pingroom\.io\/pair/);
     assert.equal(typeof events[0].expires_in, 'number');
     const connected = events.at(-1);
     assert.equal(connected.event, 'connected');
@@ -5087,7 +5102,8 @@ function reconnectServer({ revokeStatus = 204, statuses = [ACTIVE_PAIR] } = {}) 
           status: 200,
           body: {
             pair_token: 'p'.repeat(64),
-            pair_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
+            pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
+            pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
             expires_in: 900,
             poll_interval_ms: 10,
           },
