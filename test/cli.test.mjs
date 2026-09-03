@@ -2769,7 +2769,7 @@ test('the status line reflects a grant wider than one room', () => {
   }
 });
 
-test('activate explains an all-rooms grant with no delivery room instead of blaming the pairing', () => {
+test('activate explains an all-rooms grant with no home room instead of blaming the pairing', () => {
   const home = newHome();
   seedCredential(home, {
     token: 'stored_tok',
@@ -2783,7 +2783,7 @@ test('activate explains an all-rooms grant with no delivery room instead of blam
   try {
     const { status, stderr } = run(['activate'], { PINGROOM_HOME: home });
     assert.equal(status, 2);
-    assert.match(stderr, /granted all rooms but no delivery room/);
+    assert.match(stderr, /granted all rooms but has no home room/);
     assert.match(stderr, /Connected Agents/);
   } finally {
     rmSync(home, { recursive: true, force: true });

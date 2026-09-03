@@ -70,8 +70,9 @@ $ pingroom
   Try it: pingroom ping -m "Hello from this robot"
 ```
 
-Approving on the phone is the whole ceremony — connecting sends nothing else to
-your phone. The receipt reports the home room separately from the wider grant,
+Claiming the robot on the phone is the whole ceremony — connecting sends
+nothing else to your phone. The receipt reports the home room separately from
+the wider grant,
 so an all-room robot still says where its Questions and Handoffs are delivered.
 Use `--agent-label "OpenClaw on studio-mac"` when the default `PingRoom CLI`
 name would not tell several robots apart.
@@ -111,7 +112,7 @@ can ignore them, and no event contains the credential.
 
 Give each service user its own `PINGROOM_HOME`; the credential is written
 `0600` at `$PINGROOM_HOME/credentials.json`. In CI, prefer `PINGROOM_TOKEN`
-over pairing — there is nobody to approve a link.
+over pairing — there is nobody to claim a robot from a link.
 
 ## Proving the round-trip (optional)
 
@@ -140,14 +141,14 @@ There is deliberately no `login` command: being unconnected is a state the tool
 resolves, not one you have to discover. Once connected, bare `pingroom` prints
 that status line followed by the usual help.
 
-### What the approval grants
+### What claiming the robot grants
 
-Approving on the phone grants two separate things, and both are enforced:
+Claiming on the phone grants two separate things, and both are enforced:
 
-- **Permissions** — one approval covers the full agent capability set defined by
+- **Permissions** — one claim covers the full agent capability set defined by
   the PingRoom server. The CLI sends no scope array during pairing, so an older
   installed client cannot accidentally create a narrower credential when the
-  server adds a capability. The approval screen remains the authority for the
+  server adds a capability. The claim screen remains the authority for the
   access being granted.
 - **Rooms** — one room, several, or all of them. A room outside that grant
   returns `403 room_not_granted` on every room-scoped call — writes such as
