@@ -76,6 +76,7 @@ open stdin never holds it:
 $ pingroom pair
   Open: https://api.pingroom.io/pair?token=…
   Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X
+  Latest pings: https://api.pingroom.io/api/agent/notifications?limit=25&page=1
 ```
 
 Exit 0 once paired; exit 3 if the 15-minute link expired — run it again for a
@@ -88,7 +89,7 @@ JSON object per line (the credential is never printed):
 ```
 $ pingroom pair --json
 {"event":"pair_url","pair_url":"https://…","expires_in":900,"poll_interval_ms":1500}
-{"event":"connected","handle":"agt_ab12cd34ef","room":{…},"room_access":"selected",…}
+{"event":"connected","handle":"agt_ab12cd34ef","room":{…},"room_access":"selected","links":{"latest_pings":"https://…"},…}
 ```
 
 Give each service user its own `PINGROOM_HOME`; the credential is written
@@ -112,11 +113,11 @@ the result. An answered response whose stamp is false or missing is incomplete
 and is not retried as if history could be rewritten.
 
 An incomplete run exits `1`; it never deletes or replaces the saved credential.
-The command does not fall back to `PINGROOM_TOKEN`, an email-only credential, or
-a credential without `pingroom:handoffs:create` and a delivery room. A grant of
-all rooms pins no delivery room up front — pick one under Connected Agents in
-the app, or run `pingroom rooms create`, which adopts the new room as the
-delivery room when the agent was granted every room.
+The command does not fall back to `PINGROOM_TOKEN` or an email-only credential,
+and it needs a delivery room. For an all-rooms grant the server preserves an
+eligible private delivery room or chooses one deterministically. It returns no
+delivery room only when none exists; pick one under Connected Agents in the app,
+or run `pingroom rooms create`, which can establish one.
 
 There is deliberately no `login` command: being unconnected is a state the tool
 resolves, not one you have to discover. Once connected, bare `pingroom` prints
@@ -126,26 +127,23 @@ that status line followed by the usual help.
 
 Approving on the phone grants two separate things, and both are enforced:
 
-- **Permissions** — one approval covers every command this CLI ships, so it
-  asks for all 16 scopes its commands can need (`lib/scopes.js` is the list):
-  send pings, upload attachments, read pings, ask questions, request approvals,
-  create handoffs, drive live status; read/create/publish/join rooms and
-  set/trigger quick actions; and read/create/delete incoming webhooks. It does
-  **not** ask for `profile:write` (no command uses it) or the retired
-  `agents:ping`. Nothing widens them later — consent is an intersection, so a
-  scope the pairing did not request can never be granted afterwards; a command
-  needing one you did not approve returns `403 insufficient_scope`.
+- **Permissions** — one approval covers the full agent capability set defined by
+  the PingRoom server. The CLI sends no scope array during pairing, so an older
+  installed client cannot accidentally create a narrower credential when the
+  server adds a capability. The approval screen remains the authority for the
+  access being granted.
 - **Rooms** — one room, several, or all of them. A room outside that grant
   returns `403 room_not_granted` on every room-scoped call — writes such as
   pings, questions and live streams, and reads such as listing a room's quick
   actions or webhooks. Widen it under Connected Agents in the app.
 
-Both refusals print the fix, not just the code. A credential paired by an older
-CLI carries the scope set that version asked for — CLIs before 0.8.1 asked for
-only seven — so run `pingroom reconnect` if a command starts reporting
-`insufficient_scope`. That re-approves with the current set, keeps the existing
-connection working until you approve the new one, and revokes the old one only
-afterwards, so cancelling changes nothing.
+Room-grant refusals point to Connected Agents, where access can be widened
+without creating another connection. `pingroom reconnect` remains available
+when you intentionally need to replace the saved account or credential; it
+saves the replacement before revoking the old one, so cancelling changes
+nothing. If the server identifies an older credential as `insufficient_scope`,
+the CLI calls it a legacy partial credential and asks for exactly one reconnect;
+connections created by the server-owned flow do not need permission refreshes.
 
 The credential lands in `~/.pingroom/credentials.json` (mode `0600`, inside a
 `0700` directory). `PINGROOM_HOME` moves that directory; `pingroom logout`

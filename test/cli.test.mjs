@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as parserModule from '../lib/parser.js';
-import { pairingQrUrl } from '../lib/commands/connect.js';
+import { pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'bin', 'pingroom.js');
@@ -217,6 +217,28 @@ test('pairing QR prefers the native app URL and falls back for older servers', (
     pairingQrUrl({ pair_url: browserUrl, pair_qr_url: `${appUrl}\u001b[2J` }),
     /\u001b/,
   );
+});
+
+test('pairing links keep only a safe latest-pings URL and derive an old-server fallback', () => {
+  assert.deepEqual(
+    pairingLinks({ latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25' }, 'https://api.pingroom.io'),
+    { latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25' },
+  );
+  assert.deepEqual(
+    pairingLinks(undefined, 'https://self-hosted.example.test/base'),
+    { latest_pings: 'https://self-hosted.example.test/base/api/agent/notifications?limit=25&page=1' },
+  );
+  for (const latest_pings of [
+    '',
+    'javascript:alert(1)',
+    'https://secret@safe.example/pings',
+    'https://safe.example/pings\u001b[2J',
+  ]) {
+    assert.deepEqual(
+      pairingLinks({ latest_pings }, 'https://api.pingroom.io'),
+      { latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1' },
+    );
+  }
 });
 
 // `ask`, `context`, `timeout` and the `question-id` output landed in this
@@ -2441,6 +2463,9 @@ const ACTIVE_PAIR = {
   scopes: ['pingroom:broadcast:send', 'pingroom:handoffs:create'],
   account: { name: 'Mahdi' },
   room: { invite_code: 'ABC123', name: 'Project X' },
+  links: {
+    latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1',
+  },
 };
 
 test('stored credential supplies the token and the room when no env/flag does', async () => {
@@ -2633,13 +2658,19 @@ test('config api_url becomes the API base when no flag or env var is given', asy
   }
 });
 
-test('bare pingroom prints the connected status and the help', () => {
+test('bare pingroom prints the connected status, old-server latest-pings fallback, and help', () => {
   const home = newHome();
-  seedCredential(home, { token: 'stored_tok', handle: 'agt_ab12cd34ef', room: { invite_code: 'ABC123', name: 'Project X' } });
+  seedCredential(home, {
+    token: 'stored_tok',
+    handle: 'agt_ab12cd34ef',
+    room: { invite_code: 'ABC123', name: 'Project X' },
+    api_url: 'https://api.pingroom.io',
+  });
   try {
     const { status, stdout } = run([], { PINGROOM_HOME: home });
     assert.equal(status, 0);
     assert.match(stdout, /Connected as @agt_ab12cd34ef → #Project X/);
+    assert.match(stdout, /Latest pings: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
     assert.match(stdout, /Default room: ABC123/);
     assert.match(stdout, /pingroom — send a ping/);
   } finally {
@@ -2749,6 +2780,7 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     assert.match(stdout, /[█▄▀]{4}/);
     assert.match(stdout, /Or open: https:\/\/api\.pingroom\.io\/pair\?token=p{64}/);
     assert.match(stdout, /✓ Connected as @agt_ab12cd34ef → #Project X/);
+    assert.match(stdout, /Latest pings: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
     // Connecting is the whole ceremony: the approval the human just tapped IS
     // the round-trip, so nothing else is sent to their phone.
     assert.doesNotMatch(stdout, /test question/i);
@@ -2758,18 +2790,13 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     assert.equal(paths[1], '/api/agent/auth/pair/start');
     assert.deepEqual(paths.slice(2), Array(3).fill('/api/agent/auth/pair/status'));
 
-    // Anonymous registration, with the scopes the CLI actually uses.
+    // The server owns the full pairing grant. Neither client request carries a
+    // locally-maintained scope array that can go stale.
     const register = JSON.parse(received[0].body);
-    assert.equal(register.type, 'anonymous');
-    assert.ok(register.scopes.includes('pingroom:handoffs:create'));
-    assert.ok(register.scopes.includes('pingroom:questions:ask'));
-    // --attach uploads through /agent/attachments, which is its own consent
-    // scope. Asking for it at pairing is what keeps the flag usable on a
-    // QR-paired credential rather than 403ing after the bytes are read.
-    assert.ok(register.scopes.includes('pingroom:attachments:write'));
+    assert.deepEqual(register, { type: 'anonymous', agent_label: 'PingRoom CLI' });
     // pair/start and every poll present the pre-claim credential.
     assert.equal(received[1].auth, 'Bearer pre_claim_jwt');
-    assert.deepEqual(JSON.parse(received[1].body).scopes, register.scopes);
+    assert.deepEqual(JSON.parse(received[1].body), {});
     for (const poll of received.slice(2, 5)) assert.equal(poll.auth, 'Bearer pre_claim_jwt');
 
     const credPath = join(home, 'credentials.json');
@@ -2777,6 +2804,8 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     assert.equal(cred.token, 'active_jwt');
     assert.equal(cred.handle, 'agt_ab12cd34ef');
     assert.deepEqual(cred.room, { invite_code: 'ABC123', name: 'Project X' });
+    assert.deepEqual(cred.links, ACTIVE_PAIR.links);
+    assert.equal(Object.hasOwn(cred, 'scopes'), false);
     assert.equal(statSync(credPath).mode & 0o777, 0o600);
     assert.equal(statSync(home).mode & 0o777, 0o700);
 
@@ -2848,7 +2877,7 @@ test('pingroom activate retries a failed activation with the saved credential', 
   }
 });
 
-test('pingroom activate rejects non-QR or under-scoped saved credentials before HTTP', async () => {
+test('pingroom activate rejects non-QR or originless saved credentials before HTTP', async () => {
   let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
     requests += 1;
@@ -2871,15 +2900,6 @@ test('pingroom activate rejects non-QR or under-scoped saved credentials before 
     const email = await runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: emailHome });
     assert.equal(email.status, 2);
     assert.match(email.stderr, /no QR-selected delivery room/);
-
-    const underScopedHome = newHome();
-    homes.push(underScopedHome);
-    seedCredential(underScopedHome, {
-      token: 'old-token', api_url: baseUrl, room: { invite_code: 'ABC123' }, scopes: [],
-    });
-    const underScoped = await runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: underScopedHome });
-    assert.equal(underScoped.status, 2);
-    assert.match(underScoped.stderr, /lacks pingroom:handoffs:create/);
 
     const unboundHome = newHome();
     homes.push(unboundHome);
@@ -2907,6 +2927,29 @@ test('pingroom activate rejects non-QR or under-scoped saved credentials before 
   } finally {
     server.close();
     for (const home of homes) rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('pingroom activate lets the server decide access instead of rejecting saved scope metadata', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/inbox/ensure': () => ({
+      status: 403,
+      body: { code: 'insufficient_scope', message: 'This credential cannot activate Agent Inbox.' },
+    }),
+  });
+  try {
+    seedCredential(home, {
+      token: 'old-token', api_url: baseUrl, room: { invite_code: 'ABC123' }, scopes: [],
+    });
+    const result = await runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: home });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /This credential cannot activate Agent Inbox/);
+    assert.equal(received.length, 1, 'the server, not stale local scope metadata, owns access');
+    assert.equal(received[0].path, '/api/agent/inbox/ensure');
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
   }
 });
 
@@ -3156,7 +3199,19 @@ test('the email fallback claims over the unchanged claim/* endpoints', async () 
       body: { message: 'Claim email sent.', expires_in: 900 },
     }),
     'POST /api/agent/auth/claim/complete': (body) => (JSON.parse(body).otp === '040176'
-      ? { status: 200, body: { credential: 'active_jwt', credential_type: 'active', expires_in: 0, handle: 'agt_email01', scopes: [] } }
+      ? {
+        status: 200,
+        body: {
+          credential: 'active_jwt',
+          credential_type: 'active',
+          expires_in: 0,
+          handle: 'agt_email01',
+          scopes: ['pingroom:full'],
+          room: { invite_code: 'INBOX42', name: 'Private Inbox' },
+          room_access: 'all',
+          rooms: [],
+        },
+      }
       : { status: 400, body: { error: 'invalid_otp', message: 'Invalid or expired code.' } }),
   });
   try {
@@ -3169,16 +3224,21 @@ test('the email fallback claims over the unchanged claim/* endpoints', async () 
     assert.match(stdout, /Email me a code/);
     assert.match(stdout, /the page shows a 6-digit code/);
     assert.match(stderr, /Invalid or expired code/);
-    assert.match(stdout, /✓ Connected as @agt_email01/);
-    // No room comes back from the email flow, so the CLI says how to pick one.
-    assert.match(stdout, /pingroom config set default_room/);
+    assert.match(stdout, /✓ Connected as @agt_email01 → all rooms/);
+    assert.match(stdout, new RegExp(`Latest pings: ${baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/api\\/agent\\/notifications`));
+    assert.doesNotMatch(stdout, /pingroom config set default_room|reconnect with QR pairing/);
 
     const start = received.find((r) => r.path === '/api/agent/auth/claim/start');
     assert.equal(start.auth, 'Bearer pre_claim_jwt');
     assert.equal(JSON.parse(start.body).email, 'me@example.com');
     // Never draws a QR on this branch.
     assert.doesNotMatch(stdout, /[█▄▀]/);
-    assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
+    const saved = JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8'));
+    assert.equal(saved.token, 'active_jwt');
+    assert.deepEqual(saved.room, { invite_code: 'INBOX42', name: 'Private Inbox' });
+    assert.equal(saved.room_access, 'all');
+    assert.deepEqual(saved.rooms, []);
+    assert.equal(saved.links.latest_pings, `${baseUrl}/api/agent/notifications?limit=25&page=1`);
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
@@ -4046,15 +4106,16 @@ test('a refusal the operator can fix carries the fix, not just the code', async 
         message: 'This agent was not given access to that room.',
       },
       expect: /Connected Agents in the PingRoom app/,
+      reject: /pingroom reconnect/,
     },
     {
       status: 403,
       body: { code: 'insufficient_scope', message: 'This credential lacks the required scope.' },
-      expect: /Run "pingroom reconnect" to re-approve/,
+      expect: /legacy partial credential.*reconnect" once.*full-access connection/,
     },
   ];
 
-  for (const { status: httpStatus, body, expect } of cases) {
+  for (const { status: httpStatus, body, expect, reject } of cases) {
     const { server, baseUrl } = await startServer((req, res) => {
       res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -4067,6 +4128,7 @@ test('a refusal the operator can fix carries the fix, not just the code', async 
       // The server's own wording still leads.
       assert.match(stderr, new RegExp(body.message.slice(0, 24).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(stderr, expect);
+      if (reject) assert.doesNotMatch(stderr, reject);
     } finally {
       server.close();
     }
@@ -4259,9 +4321,10 @@ test('pair prints the approval URL and pairs with no TTY, no QR, and no prompt',
     assert.equal(saved.api_url, baseUrl);
     assert.equal(statSync(join(home, 'credentials.json')).mode & 0o777, 0o600);
 
-    const { CLI_SCOPES } = await import('../lib/scopes.js');
+    const register = received.find((r) => r.path === '/api/agent/auth');
     const start = received.find((r) => r.path === '/api/agent/auth/pair/start');
-    assert.deepEqual(JSON.parse(start.body).scopes, CLI_SCOPES);
+    assert.equal(Object.hasOwn(JSON.parse(register.body), 'scopes'), false);
+    assert.deepEqual(JSON.parse(start.body), {});
     assert.ok(!received.some((r) => r.path === '/api/agent/auth/revoke'), 'nothing to revoke on a first pairing');
   } finally {
     server.close();
@@ -4478,6 +4541,8 @@ test('pair --json streams pair_url first and connected last, and never the token
     assert.equal(connected.event, 'connected');
     assert.equal(connected.handle, 'agt_ab12cd34ef');
     assert.equal(connected.api_url, baseUrl);
+    assert.deepEqual(connected.links, ACTIVE_PAIR.links);
+    assert.equal(Object.hasOwn(connected, 'scopes'), false);
     // The credential is what this whole flow protects; it must never reach a log.
     assert.doesNotMatch(stdout, /active_jwt/);
   } finally {
@@ -4665,13 +4730,9 @@ test('management nouns fail as usage errors without a sub-command or token', () 
   assert.match(noRoom.stderr, /--room is required/);
 });
 
-// --- the command-to-scope contract ----------------------------------------
-//
-// The promise is "one pairing approval enables every command PingRoom ships".
-// Nothing enforced that, which is how `approval`, all of `webhooks`, `rooms
-// create|join` and `actions set|trigger` shipped 403ing on a fresh pairing:
-// consent is an intersection server-side, so a scope the pairing never asked
-// for can never be granted. These two assertions are the enforcement.
+// --- command-to-route scope documentation ----------------------------------
+// Pairing policy is server-owned. This map only keeps client commands aligned
+// with the protected routes they call; it is never sent during negotiation.
 
 test('every dispatched command declares the scopes it needs', async () => {
   const { COMMAND_SCOPES } = await import('../lib/scopes.js');
@@ -4693,37 +4754,6 @@ test('every dispatched command declares the scopes it needs', async () => {
       `"${command}" is dispatched but declares no scopes in lib/scopes.js — add it (use [] if it touches no agent route)`,
     );
   }
-});
-
-test('every scope a command needs is requested at pairing', async () => {
-  const { CLI_SCOPES, COMMAND_SCOPES } = await import('../lib/scopes.js');
-
-  for (const [command, needed] of Object.entries(COMMAND_SCOPES)) {
-    for (const scope of needed) {
-      assert.ok(
-        CLI_SCOPES.includes(scope),
-        `"${command}" needs ${scope}, which pairing never requests — it would 403 on a fresh connection`,
-      );
-    }
-  }
-
-  // And nothing is requested that no command can use: the consent screen must
-  // not ask for a permission we cannot justify to the human reading it. The one
-  // deliberate exception is approvals:request, kept so the legacy approvals
-  // surface (SDK/MCP) stays usable without a second re-pairing.
-  const used = new Set(Object.values(COMMAND_SCOPES).flat());
-  const unused = CLI_SCOPES.filter((s) => !used.has(s) && s !== 'pingroom:approvals:request');
-  assert.deepEqual(unused, [], `requested but unused scopes: ${unused.join(', ')}`);
-});
-
-test('pairing requests the 16 scopes and never the retired or unused ones', async () => {
-  const { CLI_SCOPES } = await import('../lib/scopes.js');
-  assert.equal(CLI_SCOPES.length, 16);
-  assert.equal(new Set(CLI_SCOPES).size, 16, 'no duplicates');
-  // agents:ping is retired (the route answers 410) and its consent label
-  // literally reads "(retired)"; profile:write has no CLI command.
-  assert.ok(!CLI_SCOPES.includes('pingroom:agents:ping'));
-  assert.ok(!CLI_SCOPES.includes('pingroom:profile:write'));
 });
 
 test('reconnect refuses an env token rather than revoking someone else\'s credential', async () => {
@@ -5201,7 +5231,7 @@ test('reconnect leaves the old credential untouched when pairing lapses', async 
   }
 });
 
-test('reconnect requests all 16 scopes at pair/start', async () => {
+test('reconnect leaves the full pairing grant to the server', async () => {
   const home = newHome();
   const { server, baseUrl, received } = await reconnectServer();
   seedCredential(home, { token: 'old_tok', handle: 'agt_old', api_url: baseUrl });
@@ -5211,9 +5241,10 @@ test('reconnect requests all 16 scopes at pair/start', async () => {
       { PINGROOM_HOME: home, PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test', COLUMNS: '120' },
       { stdin: '', timeoutMs: 20000 },
     );
-    const { CLI_SCOPES } = await import('../lib/scopes.js');
+    const register = received.find((r) => r.path === '/api/agent/auth');
     const start = received.find((r) => r.path === '/api/agent/auth/pair/start');
-    assert.deepEqual(JSON.parse(start.body).scopes, CLI_SCOPES);
+    assert.equal(Object.hasOwn(JSON.parse(register.body), 'scopes'), false);
+    assert.deepEqual(JSON.parse(start.body), {});
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
