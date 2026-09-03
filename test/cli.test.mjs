@@ -5100,6 +5100,54 @@ test('actions set validates the slot and required fields locally', () => {
   assert.match(noIcon.stderr, /needs --label \(may be empty\) and --icon/);
 });
 
+test('actions set-all validates the batch locally before spending a request', () => {
+  const token = ['--token', 'x'.repeat(40), '--room', 'ABC123'];
+
+  const empty = run(['actions', 'set-all', ...token]);
+  assert.equal(empty.status, 2);
+  assert.match(empty.stderr, /needs --set <json> \(repeatable\) or --actions <json array>/);
+
+  const badJson = run(['actions', 'set-all', ...token, '--set', '{nope']);
+  assert.equal(badJson.status, 2);
+  assert.match(badJson.stderr, /--set must be valid JSON/);
+
+  const badSlot = run(['actions', 'set-all', ...token, '--set', '{"action_number":9,"label":"x","icon":"y"}']);
+  assert.equal(badSlot.status, 2);
+  assert.match(badSlot.stderr, /action_number must be 1-4/);
+
+  // Two entries for one slot would let the last silently win, and the caller
+  // would never learn which of its two definitions was stored.
+  const dupe = run([
+    'actions', 'set-all', ...token,
+    '--set', '{"action_number":2,"label":"a","icon":"1"}',
+    '--set', '{"action_number":2,"label":"b","icon":"2"}',
+  ]);
+  assert.equal(dupe.status, 2);
+  assert.match(dupe.stderr, /action_number 2 appears twice/);
+
+  const noIcon = run(['actions', 'set-all', ...token, '--set', '{"action_number":1,"label":"x"}']);
+  assert.equal(noIcon.status, 2);
+  assert.match(noIcon.stderr, /needs label \(may be empty\) and icon/);
+
+  // An emoji-only Ping is valid here exactly as it is for `actions set`, so an
+  // empty label must survive local validation rather than reading as missing.
+  const emojiOnly = run([
+    'actions', 'set-all', ...token, '--set', '{"action_number":1,"label":"","icon":"🔥"}',
+  ]);
+  assert.notEqual(emojiOnly.status, 2);
+
+  const tooMany = run([
+    'actions', 'set-all', ...token,
+    '--actions', '[{"action_number":1,"label":"a","icon":"1"},{"action_number":2,"label":"b","icon":"2"},{"action_number":3,"label":"c","icon":"3"},{"action_number":4,"label":"d","icon":"4"},{"action_number":1,"label":"e","icon":"5"}]',
+  ]);
+  assert.equal(tooMany.status, 2);
+  assert.match(tooMany.stderr, /only 4 action slots/);
+
+  const notArray = run(['actions', 'set-all', ...token, '--actions', '{"action_number":1}']);
+  assert.equal(notArray.status, 2);
+  assert.match(notArray.stderr, /--actions must be a JSON array/);
+});
+
 // --------------------------------------------------------------- skills
 
 test('skills lists both published skills and every install route', () => {
