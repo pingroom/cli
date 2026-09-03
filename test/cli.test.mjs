@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as parserModule from '../lib/parser.js';
-import { pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
+import { pairingInstallUrl, pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'bin', 'pingroom.js');
@@ -219,14 +219,23 @@ test('pairing QR prefers the native app URL and falls back for older servers', (
   );
 });
 
-test('pairing links keep only a safe latest-pings URL and derive an old-server fallback', () => {
+test('pairing links keep safe read/install URLs and derive old-server fallbacks', () => {
   assert.deepEqual(
-    pairingLinks({ latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25' }, 'https://api.pingroom.io'),
-    { latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25' },
+    pairingLinks({
+      latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25',
+      install_app: 'https://pingroom.io/i',
+    }, 'https://api.pingroom.io'),
+    {
+      latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25',
+      install_app: 'https://pingroom.io/i',
+    },
   );
   assert.deepEqual(
     pairingLinks(undefined, 'https://self-hosted.example.test/base'),
-    { latest_pings: 'https://self-hosted.example.test/base/api/agent/notifications?limit=25&page=1' },
+    {
+      latest_pings: 'https://self-hosted.example.test/base/api/agent/notifications?limit=25&page=1',
+      install_app: 'https://pingroom.io/i',
+    },
   );
   for (const latest_pings of [
     '',
@@ -236,8 +245,32 @@ test('pairing links keep only a safe latest-pings URL and derive an old-server f
   ]) {
     assert.deepEqual(
       pairingLinks({ latest_pings }, 'https://api.pingroom.io'),
-      { latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1' },
+      {
+        latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1',
+        install_app: 'https://pingroom.io/i',
+      },
     );
+  }
+});
+
+test('the pairing install handoff is canonical and never carries a claim token', () => {
+  assert.equal(
+    pairingInstallUrl({ app_install_url: 'https://pingroom.io/i' }),
+    'https://pingroom.io/i',
+  );
+  assert.equal(
+    pairingInstallUrl({ mobile_app: { install_url: 'https://pingroom.io/i' } }),
+    'https://pingroom.io/i',
+  );
+  for (const install_app of [
+    `https://pingroom.io/i?token=${'p'.repeat(64)}`,
+    'https://evil.example/install',
+    'javascript:alert(1)',
+    'https://pingroom.io/i\u001b[2J',
+  ]) {
+    const selected = pairingInstallUrl({ links: { install_app } });
+    assert.equal(selected, 'https://pingroom.io/i');
+    assert.doesNotMatch(selected, /token=|p{64}|evil|\u001b/);
   }
 });
 
@@ -464,6 +497,9 @@ test('mcp prints the canonical endpoint and copy-ready client setup', () => {
   assert.match(stdout, /"url": "https:\/\/api\.pingroom\.io\/api\/agent\/mcp"/);
   assert.match(stdout, /Claude Desktop:/);
   assert.match(stdout, /Add custom connector/);
+  assert.match(stdout, /Install or open PingRoom and sign in: https:\/\/pingroom\.io\/i/);
+  assert.match(stdout, /urgent Pings, questions, approvals, handoffs, and live progress/);
+  assert.match(stdout, /does not authorize or claim an MCP robot/);
   assert.match(stdout, /creates a separate robot for that MCP client/);
   assert.match(stdout, /does not sign in as or impersonate your personal PingRoom profile/);
   assert.match(stdout, /does not modify client config/);
@@ -1683,7 +1719,7 @@ test('handoff --wait exits 3 on expiry', async () => {
   }
 });
 
-test('handoff exits 4 on 409 recipient_not_ready', async () => {
+test('handoff exits 4 on 409 recipient_not_ready with server guidance and mobile recovery', async () => {
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/handoffs': () => ({ status: 409, body: { code: 'recipient_not_ready', message: 'no device' } }),
   });
@@ -1692,7 +1728,10 @@ test('handoff exits 4 on 409 recipient_not_ready', async () => {
       'handoff', '--token', 'tok', '--api', baseUrl, '-m', 'Ack?',
     ]);
     assert.equal(status, 4);
-    assert.match(stderr, /recipient not ready/);
+    assert.match(stderr, /no device/);
+    assert.match(stderr, /Install or update PingRoom at https:\/\/pingroom\.io\/i/);
+    assert.match(stderr, /open it, sign in, and enable notifications/);
+    assert.match(stderr, /pingroom activate/);
   } finally {
     server.close();
   }
@@ -2451,6 +2490,7 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
             pair_token: 'p'.repeat(64),
             pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
             pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
+            app_install_url: 'https://pingroom.io/i',
             expires_in: 900,
             poll_interval_ms: 10,
           },
@@ -2519,6 +2559,7 @@ const ACTIVE_PAIR = {
   },
   links: {
     latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1',
+    install_app: 'https://pingroom.io/i',
   },
 };
 
@@ -2839,6 +2880,10 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     );
     assert.equal(status, 0);
     // The robot identity leads; then the QR, URL fallback, and claim receipt.
+    assert.match(stdout, /Install or open PingRoom on your phone and sign in: https:\/\/pingroom\.io\/i/);
+    assert.match(stdout, /urgent Pings, questions, approvals, handoffs, and live progress/);
+    assert.match(stdout, /Installing the app does not claim a robot or grant it access/);
+    assert.ok(stdout.indexOf('Install or open PingRoom') < stdout.indexOf('Created robot:'));
     assert.match(stdout, /Created robot: PingRoom CLI \(@agt_ab12cd34ef\)/);
     assert.match(stdout, /Claim this robot in PingRoom/);
     assert.ok(stdout.indexOf('Created robot:') < stdout.indexOf('Or open:'));
@@ -2899,6 +2944,7 @@ test('--agent-label names the robot before claim without changing pairing contra
     );
     assert.equal(status, 0, stderr);
     assert.match(stdout, /Created robot: OpenClaw on studio-mac \(@agt_ab12cd34ef\)/);
+    assert.match(stdout, /Keep this pairing running; after installing, return to the same claim link before it expires/);
     assert.match(stdout, /✓ OpenClaw on studio-mac \(@agt_ab12cd34ef\) was claimed/);
     const register = received.find((request) => request.path === '/api/agent/auth');
     assert.equal(JSON.parse(register.body).agent_label, 'OpenClaw on studio-mac');
@@ -2974,6 +3020,31 @@ test('activate keeps the saved connection when Agent Inbox activation cannot sta
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
     assert.equal(received.filter((r) => r.path === '/api/agent/inbox/ensure').length, 1);
     assert.equal(received.filter((r) => r.path.includes('/handoffs/')).length, 0);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('activate keeps server guidance and gives recipient_not_ready a concrete mobile recovery', async () => {
+  const home = newHome();
+  const { server, baseUrl } = await pairingServer([ACTIVE_PAIR], {
+    ensureResponses: [{
+      status: 409,
+      body: {
+        code: 'recipient_not_ready',
+        message: 'No supported phone has registered for this account yet.',
+      },
+    }],
+  });
+  try {
+    const { status, stdout, stderr } = await pairThenActivate(home, baseUrl);
+    assert.equal(status, 1, stderr);
+    assert.match(stdout, /No supported phone has registered for this account yet/);
+    assert.match(stdout, /Install or update PingRoom: https:\/\/pingroom\.io\/i/);
+    assert.match(stdout, /Open it, sign in, and enable notifications/);
+    assert.match(stdout, /run "pingroom activate" again/);
+    assert.match(stdout, /connection is saved and usable/);
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
@@ -3430,6 +3501,10 @@ test('help documents the credential store, the precedence, and the absence of a 
   // optional test Question is what "activate" is for.
   assert.match(stdout, /connecting sends nothing to your phone/);
   assert.match(stdout, /Run "pingroom activate" if you want to prove the round-trip/);
+  assert.match(stdout, /https:\/\/pingroom\.io\/i/);
+  assert.match(stdout, /urgent Pings, questions, approvals, handoffs, and live progress/);
+  assert.match(stdout, /Installing the app does not claim a robot or grant it access/);
+  assert.match(stdout, /keep it running and reuse its claim link/);
   assert.match(stdout, /^  config   /m);
   assert.match(stdout, /^  logout   /m);
   assert.match(stdout, /stored credential is bound to the origin it was paired\s+against/);
@@ -4680,6 +4755,7 @@ test('pair --json streams pair_url first and connected last, and never the token
     assert.equal(events[0].claim_mode, 'agent_identity');
     assert.equal(events[0].agent.profile.display_name, 'PingRoom CLI');
     assert.equal(events[0].agent.profile.handle, 'agt_ab12cd34ef');
+    assert.deepEqual(events[0].links, { install_app: 'https://pingroom.io/i' });
     const connected = events.at(-1);
     assert.equal(connected.event, 'connected');
     assert.equal(connected.handle, 'agt_ab12cd34ef');

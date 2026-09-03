@@ -34,6 +34,12 @@ path to use when you want to choose narrower access during connection. Setting
 `pingroom config set default_room <invite-code>` remains a local fallback for
 room-addressed commands.
 
+Before pairing, the person claiming the robot should install or open PingRoom
+on their phone and sign in: <https://pingroom.io/i>. The app is where urgent
+Pings, questions, approvals, handoffs, and live progress arrive. Installing it
+does not claim a robot or grant that robot access; the claim screen remains the
+consent step.
+
 ```bash
 pingroom ping -m "Deploy succeeded ✅"
 # or: npx --yes @pingroom/cli ping -m "Deploy succeeded ✅"
@@ -57,6 +63,9 @@ or take the emailed-code fallback.
 ```
 $ pingroom
   Not connected. PingRoom will create a separate robot for this tool.
+  Install or open PingRoom on your phone and sign in: https://pingroom.io/i
+  It receives urgent Pings, questions, approvals, handoffs, and live progress.
+  Installing the app does not claim a robot or grant it access.
     1) Claim the robot with a QR code
     2) Email me a code to claim the robot
   Choose [1]:
@@ -86,6 +95,10 @@ an open stdin never holds it:
 ```
 $ pingroom pair
   Created robot: PingRoom CLI (@agt_ab12cd34ef)
+  Install or open PingRoom on your phone and sign in: https://pingroom.io/i
+  It receives urgent Pings, questions, approvals, handoffs, and live progress.
+  Installing the app does not claim a robot or grant it access.
+  Keep this pairing running; after installing, return to the same claim link before it expires.
   Claim this robot in PingRoom, then choose its home room and room access.
   Open: https://api.pingroom.io/pair?token=…
   Waiting for claim… ✓ PingRoom CLI (@agt_ab12cd34ef) was claimed by Mahdi and joined #Project X.
@@ -95,20 +108,24 @@ $ pingroom pair
 
 Exit 0 once paired; exit 3 if the 15-minute link expired — run it again for a
 fresh one. It re-pairs too: when a credential already exists the new one is
-saved first, then the old one is revoked.
+saved first, then the old one is revoked. Before starting another process,
+check whether a pairing is already waiting. Keep that process running and reuse
+its claim link until it expires. If you leave to install the app, return to that
+link instead of starting another pairing.
 
 For a supervisor that reads the link out of a log, `--json` makes stdout one
 JSON object per line (the credential is never printed):
 
 ```
 $ pingroom pair --json
-{"event":"pair_url","pair_url":"https://…","agent":{"profile":{"display_name":"PingRoom CLI","handle":"agt_ab12cd34ef",…}},"expires_in":900,…}
-{"event":"connected","handle":"agt_ab12cd34ef","agent":{…},"home_room":{…},"room_access":"selected","links":{"latest_pings":"https://…"},…}
+{"event":"pair_url","pair_url":"https://…","agent":{"profile":{"display_name":"PingRoom CLI","handle":"agt_ab12cd34ef",…}},"links":{"install_app":"https://pingroom.io/i"},"expires_in":900,…}
+{"event":"connected","handle":"agt_ab12cd34ef","agent":{…},"home_room":{…},"room_access":"selected","links":{"latest_pings":"https://…","install_app":"https://pingroom.io/i"},…}
 ```
 
 The first event remains `pair_url` and the last successful event remains
 `connected`; v2 identity and home-room fields are additive. Existing consumers
-can ignore them, and no event contains the credential.
+can ignore them, and no event contains the credential. `links.install_app` is
+always the token-free mobile handoff; never append the pair token to it.
 
 Give each service user its own `PINGROOM_HOME`; the credential is written
 `0600` at `$PINGROOM_HOME/credentials.json`. In CI, prefer `PINGROOM_TOKEN`
@@ -136,6 +153,12 @@ saved robot credential and needs a home room. For an all-rooms grant the server
 preserves an eligible private home room or chooses one deterministically. It
 returns no home room only when none exists; pick one under Connected Agents in
 the app, or run `pingroom rooms create`, which can establish one.
+
+If activation returns `recipient_not_ready`, keep the saved connection. Show
+the server's explanation, ask the person to install or update PingRoom at
+<https://pingroom.io/i>, open it, sign in, and enable notifications. Then run
+`pingroom activate` again. Retry the original command only after the person
+answers the test Question and `pingroom activate` reports success.
 
 There is deliberately no `login` command: being unconnected is a state the tool
 resolves, not one you have to discover. Once connected, bare `pingroom` prints
@@ -696,6 +719,14 @@ the server, use the client's MCP controls to authorize in the browser. That
 authorization creates a separate PingRoom robot for the MCP client; you claim
 the robot and delegate its room access. The MCP client does not sign in as your
 personal PingRoom profile, and no PingRoom API key is pasted into its config.
+
+Before an agent starts pairing someone who does not have PingRoom, it should
+send <https://pingroom.io/i> and explain that the app receives urgent Pings,
+questions, approvals, handoffs, and live progress. Ask them to install or open
+it and sign in before pairing when possible. Installation is not consent; they
+must still claim the robot and choose its room access. If pairing is already
+pending, have them return to the same claim link before it expires.
+
 Once PingRoom's public listing is approved, the same plugin will also be
 discoverable in the Plugins Directory shared by ChatGPT and Codex.
 
