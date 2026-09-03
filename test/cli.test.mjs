@@ -1737,6 +1737,32 @@ test('handoff exits 4 on 409 recipient_not_ready with server guidance and mobile
   }
 });
 
+// Since 2026-09-03 the server's own recipient_not_ready message carries the
+// install instruction. Repeating it underneath made the CLI say the same
+// sentence twice; the hint must shrink to what the server left out.
+test('handoff does not repeat the install sentence the server already sent', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/handoffs': () => ({
+      status: 409,
+      body: {
+        code: 'recipient_not_ready',
+        message: 'Install or update PingRoom, open the app, sign in, and enable notifications before retrying.',
+      },
+    }),
+  });
+  try {
+    const { status, stderr } = await runAsync([
+      'handoff', '--token', 'tok', '--api', baseUrl, '-m', 'Ack?',
+    ]);
+    assert.equal(status, 4);
+    assert.equal(stderr.match(/Install or update PingRoom/g)?.length, 1);
+    assert.match(stderr, /Get it at https:\/\/pingroom\.io\/i/);
+    assert.match(stderr, /pingroom activate/);
+  } finally {
+    server.close();
+  }
+});
+
 test('handoff exits 1 on a generic server error', async () => {
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/handoffs': () => ({ status: 503, body: { code: 'capability_check_unavailable', message: 'down' } }),
