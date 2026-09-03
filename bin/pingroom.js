@@ -42,7 +42,7 @@ import { VERSION } from '../lib/version.js';
 import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
 import {
-  parseArgs, parseConfigArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
+  parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
   parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
   parseReconnectArgs, parseSkillsArgs,
 } from '../lib/parser.js';
@@ -107,7 +107,7 @@ async function main() {
   // A leading flag with no subcommand (`pingroom --api …`) counts as bare — it
   // configures the connect attempt rather than naming a command.
   if (!command || command.startsWith('-')) {
-    const bareCode = await bare(parseQArgs(argv));
+    const bareCode = await bare(parseConnectArgs(argv));
     await maybeNotifyUpdate(VERSION);
     process.exit(bareCode);
   }

@@ -464,6 +464,8 @@ test('mcp prints the canonical endpoint and copy-ready client setup', () => {
   assert.match(stdout, /"url": "https:\/\/api\.pingroom\.io\/api\/agent\/mcp"/);
   assert.match(stdout, /Claude Desktop:/);
   assert.match(stdout, /Add custom connector/);
+  assert.match(stdout, /creates a separate robot for that MCP client/);
+  assert.match(stdout, /does not sign in as or impersonate your personal PingRoom profile/);
   assert.match(stdout, /does not modify client config/);
 });
 
@@ -2388,6 +2390,18 @@ function confirmedActivationResponse(overrides = {}) {
   };
 }
 
+const PROVISIONED_AGENT = {
+  id: 'agent-1',
+  label: 'PingRoom CLI',
+  handle: 'agt_ab12cd34ef',
+  profile: {
+    display_name: 'PingRoom CLI',
+    handle: 'agt_ab12cd34ef',
+    avatar_id: 'bot-7',
+    avatar_url: 'https://api.pingroom.io/avatars/bot-7.png',
+  },
+};
+
 /**
  * Stub the pairing endpoints. `statuses` is consumed one entry per poll; the
  * last entry repeats. `rounds` counts how many times pairing was restarted.
@@ -2397,6 +2411,7 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
   let poll = 0;
   let ensureCall = 0;
   let waitCall = 0;
+  let provisionedAgent = PROVISIONED_AGENT;
   const ensureSequence = ensureResponses ?? [activationEnsureResponse()];
   const waitSequence = waitResponses ?? [confirmedActivationResponse()];
   return startServer((req, res) => {
@@ -2408,11 +2423,31 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
       let out;
       if (path === '/api/agent/auth') {
         if (onRegister) onRegister();
-        out = { status: 200, body: { credential: 'pre_claim_jwt', credential_type: 'pre_claim', expires_in: 900, scopes: [] } };
+        const requestedLabel = JSON.parse(body).agent_label;
+        provisionedAgent = {
+          ...PROVISIONED_AGENT,
+          label: requestedLabel,
+          profile: { ...PROVISIONED_AGENT.profile, display_name: requestedLabel },
+        };
+        out = {
+          status: 200,
+          body: {
+            flow_version: 2,
+            claim_mode: 'agent_identity',
+            agent: provisionedAgent,
+            credential: 'pre_claim_jwt',
+            credential_type: 'pre_claim',
+            expires_in: 900,
+            scopes: [],
+          },
+        };
       } else if (path === '/api/agent/auth/pair/start') {
         out = {
           status: 200,
           body: {
+            flow_version: 2,
+            claim_mode: 'agent_identity',
+            agent: provisionedAgent,
             pair_token: 'p'.repeat(64),
             pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
             pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
@@ -2421,7 +2456,13 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
           },
         };
       } else if (path === '/api/agent/auth/pair/status') {
-        out = { status: 200, body: statuses[Math.min(poll++, statuses.length - 1)] };
+        const pairingStatus = statuses[Math.min(poll++, statuses.length - 1)];
+        out = {
+          status: 200,
+          body: pairingStatus.status === 'active'
+            ? { ...pairingStatus, agent: provisionedAgent }
+            : pairingStatus,
+        };
       } else if (path === '/api/agent/inbox/ensure') {
         out = ensureSequence[Math.min(ensureCall++, ensureSequence.length - 1)];
       } else if (path === '/api/agent/handoffs/q-onboard/wait') {
@@ -2456,6 +2497,10 @@ async function pairThenActivate(home, baseUrl, env = {}, opts = {}) {
 
 const ACTIVE_PAIR = {
   status: 'active',
+  flow_version: 2,
+  claim_mode: 'agent_identity',
+  agent: PROVISIONED_AGENT,
+  owner: { name: 'Mahdi' },
   credential: 'active_jwt',
   credential_type: 'active',
   expires_in: 0,
@@ -2463,6 +2508,15 @@ const ACTIVE_PAIR = {
   scopes: ['pingroom:broadcast:send', 'pingroom:handoffs:create'],
   account: { name: 'Mahdi' },
   room: { invite_code: 'ABC123', name: 'Project X' },
+  home_room: { invite_code: 'ABC123', name: 'Project X' },
+  room_access: 'selected',
+  rooms: [{ id: 'room-1', invite_code: 'ABC123', name: 'Project X' }],
+  room_membership: {
+    status: 'active',
+    joined_at: '2026-09-03T08:00:00Z',
+    removed_at: null,
+    room: { invite_code: 'ABC123', name: 'Project X' },
+  },
   links: {
     latest_pings: 'https://api.pingroom.io/api/agent/notifications?limit=25&page=1',
   },
@@ -2669,8 +2723,8 @@ test('bare pingroom prints the connected status, old-server latest-pings fallbac
   try {
     const { status, stdout } = run([], { PINGROOM_HOME: home });
     assert.equal(status, 0);
-    assert.match(stdout, /Connected as @agt_ab12cd34ef → #Project X/);
-    assert.match(stdout, /Latest pings: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
+    assert.match(stdout, /Robot @agt_ab12cd34ef is connected · home #Project X/);
+    assert.match(stdout, /Latest pings API: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
     assert.match(stdout, /Default room: ABC123/);
     assert.match(stdout, /pingroom — send a ping/);
   } finally {
@@ -2682,7 +2736,15 @@ test('the status line reflects a grant wider than one room', () => {
   const cases = [
     {
       cred: { room_access: 'all', room: null, rooms: [] },
-      expect: /Connected as @agt_ab12cd34ef → all rooms/,
+      expect: /Robot @agt_ab12cd34ef is connected · no home room · access all rooms/,
+    },
+    {
+      cred: {
+        room_access: 'all',
+        room: { invite_code: 'ABC123', name: 'Project X' },
+        rooms: [],
+      },
+      expect: /Robot @agt_ab12cd34ef is connected · home #Project X · access all rooms/,
     },
     {
       cred: {
@@ -2690,7 +2752,7 @@ test('the status line reflects a grant wider than one room', () => {
         room: { invite_code: 'ABC123', name: 'Project X' },
         rooms: [{ invite_code: 'ABC123', name: 'Project X' }, { invite_code: 'DEF456', name: 'Ops' }],
       },
-      expect: /Connected as @agt_ab12cd34ef → #Project X \+1 more/,
+      expect: /Robot @agt_ab12cd34ef is connected · home #Project X · access \+1 more/,
     },
   ];
 
@@ -2776,11 +2838,15 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
       { stdin: '\n' }, // accept the default picker choice (QR)
     );
     assert.equal(status, 0);
-    // The QR itself, then the URL fallback, then the confirmation.
+    // The robot identity leads; then the QR, URL fallback, and claim receipt.
+    assert.match(stdout, /Created robot: PingRoom CLI \(@agt_ab12cd34ef\)/);
+    assert.match(stdout, /Claim this robot in PingRoom/);
+    assert.ok(stdout.indexOf('Created robot:') < stdout.indexOf('Or open:'));
     assert.match(stdout, /[█▄▀]{4}/);
     assert.match(stdout, /Or open: https:\/\/api\.pingroom\.io\/pair\?token=p{64}/);
-    assert.match(stdout, /✓ Connected as @agt_ab12cd34ef → #Project X/);
-    assert.match(stdout, /Latest pings: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
+    assert.match(stdout, /Waiting for claim…/);
+    assert.match(stdout, /✓ PingRoom CLI \(@agt_ab12cd34ef\) was claimed by Mahdi and joined #Project X/);
+    assert.doesNotMatch(stdout, /Latest pings API:/, 'the claim receipt should lead to an action, not an inbox endpoint');
     // Connecting is the whole ceremony: the approval the human just tapped IS
     // the round-trip, so nothing else is sent to their phone.
     assert.doesNotMatch(stdout, /test question/i);
@@ -2806,6 +2872,10 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
     assert.deepEqual(cred.room, { invite_code: 'ABC123', name: 'Project X' });
     assert.deepEqual(cred.links, ACTIVE_PAIR.links);
     assert.equal(Object.hasOwn(cred, 'scopes'), false);
+    assert.equal(cred.version, 1, 'the established credential file format stays v1');
+    assert.equal(Object.hasOwn(cred, 'agent'), false, 'display metadata does not change the v1 file');
+    assert.equal(Object.hasOwn(cred, 'owner'), false);
+    assert.equal(Object.hasOwn(cred, 'home_room'), false);
     assert.equal(statSync(credPath).mode & 0o777, 0o600);
     assert.equal(statSync(home).mode & 0o777, 0o700);
 
@@ -2815,6 +2885,75 @@ test('pairing renders a QR, polls to active, and stores a 0600 credential', asyn
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('--agent-label names the robot before claim without changing pairing contracts', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await pairingServer([ACTIVE_PAIR]);
+  try {
+    const { status, stdout, stderr } = await runAsync(
+      ['pair', '--api', baseUrl, '--agent-label', 'OpenClaw on studio-mac'],
+      { PINGROOM_HOME: home },
+      { stdin: '', timeoutMs: 20_000 },
+    );
+    assert.equal(status, 0, stderr);
+    assert.match(stdout, /Created robot: OpenClaw on studio-mac \(@agt_ab12cd34ef\)/);
+    assert.match(stdout, /✓ OpenClaw on studio-mac \(@agt_ab12cd34ef\) was claimed/);
+    const register = received.find((request) => request.path === '/api/agent/auth');
+    assert.equal(JSON.parse(register.body).agent_label, 'OpenClaw on studio-mac');
+    assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).version, 1);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('bare connect accepts --agent-label while unrelated commands reject it', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await pairingServer([ACTIVE_PAIR]);
+  try {
+    const connected = await runAsync(
+      ['--api', baseUrl, '--agent-label', 'Local coding robot'],
+      {
+        PINGROOM_HOME: home,
+        PINGROOM_INTERNAL_TEST_TTY: '1',
+        NODE_ENV: 'test',
+        COLUMNS: '120',
+      },
+      { stdin: '\n', timeoutMs: 20_000 },
+    );
+    assert.equal(connected.status, 0, connected.stderr);
+    assert.match(connected.stdout, /Created robot: Local coding robot \(@agt_ab12cd34ef\)/);
+    const register = received.find((request) => request.path === '/api/agent/auth');
+    assert.equal(JSON.parse(register.body).agent_label, 'Local coding robot');
+
+    const unrelated = await runAsync([
+      'ask', '--agent-label', 'ignored', '--token', 'tok', '--room', 'ABC123',
+      '--prompt', 'Ship?', '--api', baseUrl,
+    ]);
+    assert.equal(unrelated.status, 2);
+    assert.match(unrelated.stderr, /Unknown option: --agent-label/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('--agent-label rejects blank or control-marked names before provisioning', async () => {
+  for (const label of [' ', 'robot\u001b[2J']) {
+    const home = newHome();
+    try {
+      const result = await runAsync(
+        ['pair', '--agent-label', label],
+        { PINGROOM_HOME: home },
+        { stdin: '' },
+      );
+      assert.equal(result.status, 2);
+      assert.match(result.stderr, /--agent-label must be non-empty text without control characters/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   }
 });
 
@@ -2860,7 +2999,7 @@ test('pingroom activate retries a failed activation with the saved credential', 
       { PINGROOM_HOME: home, PINGROOM_TOKEN: 'must-not-be-used' },
     );
     assert.equal(retried.status, 0, retried.stderr);
-    assert.match(retried.stdout, /Connected as @agt_ab12cd34ef/);
+    assert.match(retried.stdout, /Robot @agt_ab12cd34ef is connected/);
     assert.match(retried.stdout, /Agent Inbox is ready/);
 
     const ensureCalls = received.filter((request) => request.path === '/api/agent/inbox/ensure');
@@ -2877,7 +3016,7 @@ test('pingroom activate retries a failed activation with the saved credential', 
   }
 });
 
-test('pingroom activate rejects non-QR or originless saved credentials before HTTP', async () => {
+test('pingroom activate rejects missing-home or originless saved credentials before HTTP', async () => {
   let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
     requests += 1;
@@ -2890,7 +3029,7 @@ test('pingroom activate rejects non-QR or originless saved credentials before HT
     homes.push(noCredentialHome);
     const noCredential = await runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: noCredentialHome });
     assert.equal(noCredential.status, 2);
-    assert.match(noCredential.stderr, /no saved QR-paired credential/);
+    assert.match(noCredential.stderr, /no saved robot credential/);
 
     const emailHome = newHome();
     homes.push(emailHome);
@@ -2899,7 +3038,7 @@ test('pingroom activate rejects non-QR or originless saved credentials before HT
     });
     const email = await runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: emailHome });
     assert.equal(email.status, 2);
-    assert.match(email.stderr, /no QR-selected delivery room/);
+    assert.match(email.stderr, /saved robot has no home room/);
 
     const unboundHome = newHome();
     homes.push(unboundHome);
@@ -3140,7 +3279,7 @@ test('pairing offers a fresh QR when the pre-claim window expires', async () => 
     assert.equal(status, 0);
     assert.match(stdout, /That code expired\./);
     assert.match(stdout, /Show a fresh QR code\?/);
-    assert.match(stdout, /✓ Connected as @agt_ab12cd34ef/);
+    assert.match(stdout, /✓ PingRoom CLI \(@agt_ab12cd34ef\) was claimed/);
     assert.equal(rounds, 2, 'a restart must mint a brand new pre-claim registration');
     assert.equal(received.filter((r) => r.path === '/api/agent/auth/pair/start').length, 2);
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
@@ -3180,7 +3319,7 @@ test('a narrow terminal degrades to the pair URL alone', async () => {
     assert.equal(status, 0);
     assert.doesNotMatch(stdout, /[█▄▀]/);
     assert.match(stdout, /Open: https:\/\/api\.pingroom\.io\/pair/);
-    assert.match(stdout, /✓ Connected as/);
+    assert.match(stdout, /was claimed by Mahdi and joined #Project X/);
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
@@ -3224,8 +3363,8 @@ test('the email fallback claims over the unchanged claim/* endpoints', async () 
     assert.match(stdout, /Email me a code/);
     assert.match(stdout, /the page shows a 6-digit code/);
     assert.match(stderr, /Invalid or expired code/);
-    assert.match(stdout, /✓ Connected as @agt_email01 → all rooms/);
-    assert.match(stdout, new RegExp(`Latest pings: ${baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/api\\/agent\\/notifications`));
+    assert.match(stdout, /✓ PingRoom CLI \(@agt_email01\) was claimed and joined #Private Inbox/);
+    assert.doesNotMatch(stdout, /Latest pings API:/);
     assert.doesNotMatch(stdout, /pingroom config set default_room|reconnect with QR pairing/);
 
     const start = received.find((r) => r.path === '/api/agent/auth/claim/start');
@@ -3405,7 +3544,7 @@ test('an explicit "n" still declines, and "y" still restarts, after the EOF fix'
     );
     assert.equal(status, 0, stdout);
     assert.equal(stub.registrations, 2, 'an empty line is still "yes, show another"');
-    assert.match(stdout, /✓ Connected as @agt_ab12cd34ef/);
+    assert.match(stdout, /✓ PingRoom CLI \(@agt_ab12cd34ef\) was claimed/);
   } finally {
     stub.server.close();
     rmSync(home, { recursive: true, force: true });
@@ -3553,7 +3692,7 @@ test('a transient 502, 429 or dropped connection does not abandon the pairing wa
         { stdin: '1\n', timeoutMs: 20_000 },
       );
       assert.equal(status, 0, `${JSON.stringify(flake)}: ${stdout}`);
-      assert.match(stdout, /✓ Connected as @agt_ab12cd34ef/);
+      assert.match(stdout, /✓ PingRoom CLI \(@agt_ab12cd34ef\) was claimed/);
       assert.equal(stub.registrations, 1, 'a retry must reuse the same pre-claim, not re-register');
     } finally {
       stub.server.close();
@@ -3662,7 +3801,7 @@ test('a negative expires_in is clamped instead of producing a deadline in the pa
       stub.received.some((r) => r.path === '/api/agent/auth/pair/status'),
       'the clamp must leave at least one poll inside the window',
     );
-    assert.match(stdout, /✓ Connected as/);
+    assert.match(stdout, /was claimed by Mahdi and joined #Project X/);
   } finally {
     stub.server.close();
     rmSync(home, { recursive: true, force: true });
@@ -4537,11 +4676,19 @@ test('pair --json streams pair_url first and connected last, and never the token
     assert.equal(events[0].event, 'pair_url');
     assert.match(events[0].pair_url, /^https:\/\/api\.pingroom\.io\/pair/);
     assert.equal(typeof events[0].expires_in, 'number');
+    assert.equal(events[0].flow_version, 2);
+    assert.equal(events[0].claim_mode, 'agent_identity');
+    assert.equal(events[0].agent.profile.display_name, 'PingRoom CLI');
+    assert.equal(events[0].agent.profile.handle, 'agt_ab12cd34ef');
     const connected = events.at(-1);
     assert.equal(connected.event, 'connected');
     assert.equal(connected.handle, 'agt_ab12cd34ef');
     assert.equal(connected.api_url, baseUrl);
     assert.deepEqual(connected.links, ACTIVE_PAIR.links);
+    assert.deepEqual(connected.owner, { name: 'Mahdi' });
+    assert.deepEqual(connected.home_room, ACTIVE_PAIR.home_room);
+    assert.equal(connected.room_membership.status, 'active');
+    assert.equal(connected.agent.profile.avatar_id, 'bot-7');
     assert.equal(Object.hasOwn(connected, 'scopes'), false);
     // The credential is what this whole flow protects; it must never reach a log.
     assert.doesNotMatch(stdout, /active_jwt/);
@@ -5126,11 +5273,25 @@ function reconnectServer({ revokeStatus = 204, statuses = [ACTIVE_PAIR] } = {}) 
       received.push({ method: req.method, path, auth: req.headers['authorization'], body });
       let out;
       if (path === '/api/agent/auth') {
-        out = { status: 200, body: { credential: 'pre_claim_jwt', credential_type: 'pre_claim', expires_in: 900, scopes: [] } };
+        out = {
+          status: 200,
+          body: {
+            flow_version: 2,
+            claim_mode: 'agent_identity',
+            agent: PROVISIONED_AGENT,
+            credential: 'pre_claim_jwt',
+            credential_type: 'pre_claim',
+            expires_in: 900,
+            scopes: [],
+          },
+        };
       } else if (path === '/api/agent/auth/pair/start') {
         out = {
           status: 200,
           body: {
+            flow_version: 2,
+            claim_mode: 'agent_identity',
+            agent: PROVISIONED_AGENT,
             pair_token: 'p'.repeat(64),
             pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
             pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
@@ -5237,12 +5398,13 @@ test('reconnect leaves the full pairing grant to the server', async () => {
   seedCredential(home, { token: 'old_tok', handle: 'agt_old', api_url: baseUrl });
   try {
     await runAsync(
-      ['reconnect', '--api', baseUrl],
+      ['reconnect', '--api', baseUrl, '--agent-label', 'Replacement robot'],
       { PINGROOM_HOME: home, PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test', COLUMNS: '120' },
       { stdin: '', timeoutMs: 20000 },
     );
     const register = received.find((r) => r.path === '/api/agent/auth');
     const start = received.find((r) => r.path === '/api/agent/auth/pair/start');
+    assert.equal(JSON.parse(register.body).agent_label, 'Replacement robot');
     assert.equal(Object.hasOwn(JSON.parse(register.body), 'scopes'), false);
     assert.deepEqual(JSON.parse(start.body), {});
   } finally {

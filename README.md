@@ -21,15 +21,18 @@ Or use it without a global install:
 npx --yes @pingroom/cli
 ```
 
-Either command starts the same connection prompt. QR pairing stores the selected
-account, credential, and room grant in `~/.pingroom`; later commands reuse
-them, so a local invocation needs neither `PINGROOM_TOKEN` nor `PINGROOM_ROOM`.
-On the phone you grant one room, several, or every room on the account — the
-first room you pick is the delivery room, where Questions and Handoffs land.
-The email fallback stores the credential only. Setting
-`pingroom config set default_room <invite-code>` enables room-addressed commands,
-but private Agent Inbox and Handoff delivery require a connection approved with
-a delivery room. Use QR pairing for the complete flow.
+Either command starts the same connection prompt. PingRoom first provisions a
+separate robot profile for the tool; the person signing in claims that robot
+and delegates its room access. QR pairing stores the credential and room grant
+in `~/.pingroom`; later commands reuse them, so a local invocation needs neither
+`PINGROOM_TOKEN` nor `PINGROOM_ROOM`. On the phone you choose the robot's home
+room and grant one room, several, or every room on the account. Questions and
+Handoffs land in that home room even when the robot can reach every room.
+The email fallback has no room picker: it grants all rooms and chooses a stable
+eligible private room as the robot's home when one exists. QR pairing is the
+path to use when you want to choose narrower access during connection. Setting
+`pingroom config set default_room <invite-code>` remains a local fallback for
+room-addressed commands.
 
 ```bash
 pingroom ping -m "Deploy succeeded ✅"
@@ -47,36 +50,46 @@ Run `pingroom --help` for the full reference.
 ## Connecting
 
 Run `pingroom` (global install) or `npx --yes @pingroom/cli` (no install) with no
-arguments. It prints a QR code — scan it with the PingRoom app, pick the account,
-and grant the rooms this agent may reach — or take the emailed-code fallback.
+arguments. It creates a robot, then prints a QR code. Scan it with the PingRoom
+app to claim the robot, choose its home room, and grant the rooms it may reach —
+or take the emailed-code fallback.
 
 ```
 $ pingroom
-  Not connected. How do you want to connect?
-    1) Scan a QR code with the PingRoom app
-    2) Email me a code
+  Not connected. PingRoom will create a separate robot for this tool.
+    1) Claim the robot with a QR code
+    2) Email me a code to claim the robot
   Choose [1]:
 
+  Created robot: PingRoom CLI (@agt_ab12cd34ef)
+  Claim this robot in PingRoom, then choose its home room and room access.
   [QR]
   Or open: https://api.pingroom.io/pair?token=…
-  Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X +2 more
+  Waiting for claim… ✓ PingRoom CLI (@agt_ab12cd34ef) was claimed by Mahdi and joined #Project X.
+  Room access: 3 selected rooms
+  Try it: pingroom ping -m "Hello from this robot"
 ```
 
 Approving on the phone is the whole ceremony — connecting sends nothing else to
-your phone. The status line reflects the grant: `→ #Project X` for one room,
-`→ #Project X +2 more` for several, `→ all rooms` when you granted every room.
+your phone. The receipt reports the home room separately from the wider grant,
+so an all-room robot still says where its Questions and Handoffs are delivered.
+Use `--agent-label "OpenClaw on studio-mac"` when the default `PingRoom CLI`
+name would not tell several robots apart.
 
 ### Headless pairing (daemons, containers, OpenClaw)
 
 A machine with no terminal cannot show a QR, so `pingroom pair` prints the
-approval link and waits for it instead. Nothing prompts, nothing draws, and an
-open stdin never holds it:
+robot's claim link and waits for it instead. Nothing prompts, nothing draws, and
+an open stdin never holds it:
 
 ```
 $ pingroom pair
+  Created robot: PingRoom CLI (@agt_ab12cd34ef)
+  Claim this robot in PingRoom, then choose its home room and room access.
   Open: https://api.pingroom.io/pair?token=…
-  Waiting for approval… ✓ Connected as @agt_ab12cd34ef → #Project X
-  Latest pings: https://api.pingroom.io/api/agent/notifications?limit=25&page=1
+  Waiting for claim… ✓ PingRoom CLI (@agt_ab12cd34ef) was claimed by Mahdi and joined #Project X.
+  Room access: all rooms
+  Try it: pingroom ping -m "Hello from this robot"
 ```
 
 Exit 0 once paired; exit 3 if the 15-minute link expired — run it again for a
@@ -88,9 +101,13 @@ JSON object per line (the credential is never printed):
 
 ```
 $ pingroom pair --json
-{"event":"pair_url","pair_url":"https://…","expires_in":900,"poll_interval_ms":1500}
-{"event":"connected","handle":"agt_ab12cd34ef","room":{…},"room_access":"selected","links":{"latest_pings":"https://…"},…}
+{"event":"pair_url","pair_url":"https://…","agent":{"profile":{"display_name":"PingRoom CLI","handle":"agt_ab12cd34ef",…}},"expires_in":900,…}
+{"event":"connected","handle":"agt_ab12cd34ef","agent":{…},"home_room":{…},"room_access":"selected","links":{"latest_pings":"https://…"},…}
 ```
+
+The first event remains `pair_url` and the last successful event remains
+`connected`; v2 identity and home-room fields are additive. Existing consumers
+can ignore them, and no event contains the credential.
 
 Give each service user its own `PINGROOM_HOME`; the credential is written
 `0600` at `$PINGROOM_HOME/credentials.json`. In CI, prefer `PINGROOM_TOKEN`
@@ -113,11 +130,11 @@ the result. An answered response whose stamp is false or missing is incomplete
 and is not retried as if history could be rewritten.
 
 An incomplete run exits `1`; it never deletes or replaces the saved credential.
-The command does not fall back to `PINGROOM_TOKEN` or an email-only credential,
-and it needs a delivery room. For an all-rooms grant the server preserves an
-eligible private delivery room or chooses one deterministically. It returns no
-delivery room only when none exists; pick one under Connected Agents in the app,
-or run `pingroom rooms create`, which can establish one.
+The command does not fall back to `PINGROOM_TOKEN`; it deliberately uses the
+saved robot credential and needs a home room. For an all-rooms grant the server
+preserves an eligible private home room or chooses one deterministically. It
+returns no home room only when none exists; pick one under Connected Agents in
+the app, or run `pingroom rooms create`, which can establish one.
 
 There is deliberately no `login` command: being unconnected is a state the tool
 resolves, not one you have to discover. Once connected, bare `pingroom` prints
@@ -674,10 +691,12 @@ pingroom mcp
 
 `pingroom mcp add codex` and `pingroom mcp add claude-code` print the exact setup
 commands but do not execute them or modify client configuration. After adding
-the server, use the client's MCP controls to authenticate in the browser; no
-PingRoom API key is pasted into its config. Once PingRoom's public listing is
-approved, the same plugin will also be discoverable in the Plugins Directory
-shared by ChatGPT and Codex.
+the server, use the client's MCP controls to authorize in the browser. That
+authorization creates a separate PingRoom robot for the MCP client; you claim
+the robot and delegate its room access. The MCP client does not sign in as your
+personal PingRoom profile, and no PingRoom API key is pasted into its config.
+Once PingRoom's public listing is approved, the same plugin will also be
+discoverable in the Plugins Directory shared by ChatGPT and Codex.
 
 For a fully typed client, use [`@pingroom/sdk`](https://www.npmjs.com/package/@pingroom/sdk).
 See <https://pingroom.io/connect-mcp.md> for the complete MCP and OAuth guide.
