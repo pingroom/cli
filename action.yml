@@ -155,7 +155,7 @@ runs:
         set -o pipefail
         # Release gate: keep the Action on an npm-published version. Advance
         # this independently only after the matching CLI package is public.
-        CLI="npx --yes @pingroom/cli@0.10.1"
+        CLI="npx --yes @pingroom/cli@0.10.0"
 
         # Split an options input into the PR_OPTS array, one value:label spec per
         # element.

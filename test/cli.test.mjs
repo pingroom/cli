@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as parserModule from '../lib/parser.js';
-import { pairingInstallUrl, pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
+import { pairingBrowserUrl, pairingInstallUrl, pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', 'bin', 'pingroom.js');
@@ -126,10 +126,10 @@ test('source versions align while the GitHub Action stays on the published relea
   assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
-  // The Action must pin the concrete, clean-install-verified npm release, never
-  // a range or `latest` — and the same one this source tree declares.
+  // Source can be prepared before publication. The Action advances separately
+  // after its pinned package is available; CI checks the registry too.
   const pinned = action.match(/@pingroom\/cli@(\d+\.\d+\.\d+)/)?.[1];
-  assert.equal(pinned, pkg.version);
+  assert.ok(pinned, 'Action must pin a concrete CLI version');
 });
 
 /** Read action.yml once; every static Action assertion below shares it. */
@@ -217,6 +217,17 @@ test('pairing QR prefers the native app URL and falls back for older servers', (
     pairingQrUrl({ pair_url: browserUrl, pair_qr_url: `${appUrl}\u001b[2J` }),
     /\u001b/,
   );
+});
+
+test('browser pairing prefers the additive browser URL without changing the QR', () => {
+  const appUrl = 'https://pingroom.io/app/agents/pair?token=p';
+  const browserUrl = 'https://api.pingroom.io/pair?token=p';
+  const pairing = { pair_url: appUrl, pair_qr_url: appUrl, pair_browser_url: browserUrl };
+  assert.equal(pairingBrowserUrl(pairing), browserUrl);
+  assert.equal(pairingQrUrl(pairing), appUrl);
+  assert.equal(pairingBrowserUrl({ pair_url: appUrl }), appUrl);
+  assert.equal(pairingBrowserUrl({ pair_url: appUrl, pair_browser_url: '  ' }), appUrl);
+  assert.equal(pairingBrowserUrl({ ...pairing, pair_browser_url: `${browserUrl}\u001b[2J` }), `${browserUrl}[2J`);
 });
 
 test('pairing links keep safe read/install URLs and derive old-server fallbacks', () => {
@@ -2514,7 +2525,8 @@ function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } 
             claim_mode: 'agent_identity',
             agent: provisionedAgent,
             pair_token: 'p'.repeat(64),
-            pair_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
+            pair_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
+            pair_browser_url: `https://api.pingroom.io/pair?token=${'p'.repeat(64)}`,
             pair_qr_url: `https://pingroom.io/app/agents/pair?token=${'p'.repeat(64)}`,
             app_install_url: 'https://pingroom.io/i',
             expires_in: 900,
