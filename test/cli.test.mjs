@@ -117,8 +117,8 @@ test('GitHub Action splits options on newlines first so a label may contain a co
 });
 
 // Release policy: package.json is the single source of the version — bin/ reads
-// it at startup — so no test hardcodes a literal. The Action's `npx` pin must be
-// bumped in the SAME COMMIT as package.json, and the lockfile bumped with it.
+// it at startup — so no test hardcodes a literal. Keep the lockfile aligned;
+// advance the Action's `npx` pin only after the new package is published.
 test('source versions align while the GitHub Action stays on the published release', () => {
   const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(join(__dirname, '..', 'package-lock.json'), 'utf8'));

@@ -1,6 +1,6 @@
 {
   "name": "@pingroom/cli",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "Send PingRoom Pings and wait for human decisions from CI, scripts, and agents.",
   "type": "module",
   "bin": {
