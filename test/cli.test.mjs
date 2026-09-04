@@ -5619,6 +5619,53 @@ test('reconnect refuses to send the stored credential to another origin', async 
 // the server never sends printed a bare "created" and swallowed the trigger
 // URL — the one credential `webhooks create` exists to hand over.
 
+test('actions trigger forwards independent acknowledgement and urgency modifiers', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/actions/1/trigger': () => ({ body: { id: 'n1' } }),
+  });
+  try {
+    for (const [flags, expected] of [
+      [[], {}],
+      [['--require-ack'], { requires_ack: true }],
+      [['--urgent'], { is_urgent: true }],
+      [['--require-ack', '--urgent'], { requires_ack: true, is_urgent: true }],
+    ]) {
+      const { status, stderr } = await runAsync([
+        'actions', 'trigger', '1', '--room', 'ab12cd', '--token', 'test-token',
+        '--api', baseUrl, '--idempotency-key', 'press-42', ...flags,
+      ]);
+      assert.equal(status, 0, stderr);
+      assert.deepEqual(JSON.parse(received.at(-1).body), expected);
+      assert.equal(received.at(-1).idempotency, 'press-42');
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('rooms join sends the protected-room password and preserves server failures', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/join': (body) => JSON.parse(body).password === 'room secret'
+      ? { body: { invite_code: 'ab12cd', name: 'Deploys' } }
+      : { status: 403, body: { code: 'password_required', message: 'Password required' } },
+  });
+  try {
+    const base = ['rooms', 'join', 'ab12cd', '--token', 'test-token', '--api', baseUrl];
+    const missing = await runAsync(base);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /Password required|password_required/);
+    assert.deepEqual(JSON.parse(received[0].body), { invite_code: 'ab12cd' });
+
+    const joined = await runAsync([...base, '--password', 'room secret']);
+    assert.equal(joined.status, 0, joined.stderr);
+    assert.match(joined.stdout, /joined Deploys/);
+    assert.deepEqual(JSON.parse(received[1].body), { invite_code: 'ab12cd', password: 'room secret' });
+    assert.doesNotMatch(joined.stdout + joined.stderr, /room secret/);
+  } finally {
+    server.close();
+  }
+});
+
 test('webhooks create prints the flat trigger url the server returns', async () => {
   const { server, baseUrl } = await startServer((req, res) => {
     let body = '';
