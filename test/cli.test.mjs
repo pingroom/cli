@@ -119,17 +119,18 @@ test('GitHub Action splits options on newlines first so a label may contain a co
 // Release policy: package.json is the single source of the version — bin/ reads
 // it at startup — so no test hardcodes a literal. Keep the lockfile aligned;
 // advance the Action's `npx` pin only after the new package is published.
-test('source versions align while the GitHub Action stays on the published release', () => {
+test('source versions and the GitHub Action pin align for a completed release', () => {
   const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(join(__dirname, '..', 'package-lock.json'), 'utf8'));
   const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
   assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
-  // Source can be prepared before publication. The Action advances separately
-  // after its pinned package is available; CI checks the registry too.
+  // Release prep may temporarily differ. A completed release must update the
+  // Action after npm publication; CI checks that the pinned package exists.
   const pinned = action.match(/@pingroom\/cli@(\d+\.\d+\.\d+)/)?.[1];
   assert.ok(pinned, 'Action must pin a concrete CLI version');
+  assert.equal(pinned, pkg.version, 'Publish the CLI, then advance its Action pin before completing the release');
 });
 
 /** Read action.yml once; every static Action assertion below shares it. */

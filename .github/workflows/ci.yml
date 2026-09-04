@@ -17,13 +17,17 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
-      - name: Verify the Action pins a published CLI
+      - name: Verify the Action matches the published CLI release
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
           import { execFileSync } from 'node:child_process';
           const pin = readFileSync('action.yml', 'utf8').match(/@pingroom\/cli@\d+\.\d+\.\d+/)?.[0];
           if (!pin) throw new Error('Action must pin a concrete CLI release');
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+          if (pin !== `@pingroom/cli@${version}`) {
+            throw new Error(`Publish CLI ${version}, then update the Action pin to match`);
+          }
           execFileSync('npm', ['view', pin, 'version'], { stdio: 'inherit' });
           NODE
       - run: npm test
