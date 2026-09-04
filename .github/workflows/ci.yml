@@ -30,4 +30,5 @@ jobs:
           }
           execFileSync('npm', ['view', pin, 'version'], { stdio: 'inherit' });
           NODE
-      - run: npm test
+      # Expand the file pattern in the shell; Node 20 treats a quoted glob literally.
+      - run: node --test test/*.test.mjs
