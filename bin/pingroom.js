@@ -24,6 +24,7 @@
 //            update) on the room members' lock screen: start / update / end.
 //   mcp      Print the canonical remote MCP endpoint and client setup snippets.
 //   skills   List the published agent skills, or install them for Claude Code.
+//   redeem   Redeem a gifted or promotional Pro code for the connected account.
 //   activate Send one optional test Question with the saved QR-paired credential.
 //   config   Read/write ~/.pingroom/config.json (default_room, api_url).
 //   logout   Forget the credential in ~/.pingroom/credentials.json.
@@ -44,7 +45,7 @@ import { maybeNotifyUpdate } from '../lib/update-check.js';
 import {
   parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
   parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
-  parseReconnectArgs, parseSkillsArgs,
+  parseReconnectArgs, parseRedeemArgs, parseSkillsArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
 import { ping } from '../lib/commands/ping.js';
@@ -55,6 +56,7 @@ import { live } from '../lib/commands/live.js';
 import { hook } from '../lib/commands/hook.js';
 import { mcp } from '../lib/commands/mcp.js';
 import { skills } from '../lib/commands/skills.js';
+import { redeem } from '../lib/commands/redeem.js';
 import { activateStoredInbox, bare, pair, reconnect } from '../lib/commands/connect.js';
 import { config, logout } from '../lib/commands/config.js';
 
@@ -71,6 +73,7 @@ const COMMANDS = {
   hook: (rest) => hook(parseHookArgs(rest)),
   mcp,
   skills: (rest) => skills(parseSkillsArgs(rest)),
+  redeem: (rest) => redeem(parseRedeemArgs(rest)),
   activate: (rest) => activateStoredInbox(parseQArgs(rest)),
   live: (rest) => live(parseLiveArgs(rest)),
   rooms: (rest) => rooms(parseManageArgs(rest)),

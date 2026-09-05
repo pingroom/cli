@@ -762,6 +762,28 @@ which keeps them updated:
 /plugin install pingroom-mcp
 ```
 
+## Redeem a gift or promotional code
+
+Redeem a code for the human account that connected the CLI:
+
+```bash
+pingroom redeem ABCD1234EFGH
+pingroom redeem --code ABCD1234EFGH --json
+```
+
+Codes contain 12 letters or digits. The CLI trims surrounding spaces and
+accepts either letter case. It uses the paired credential, `PINGROOM_TOKEN`, or
+`--token`; no room or existing Pro plan is required. Full-access connections
+include redemption. A legacy partial credential needs `pingroom reconnect` if
+the API returns `insufficient_scope`.
+
+For scripts, set `PINGROOM_REDEEM_CODE` from your secret store, then run
+`pingroom redeem --json` to keep the code out of command arguments and shell
+history. The JSON receipt contains the code kind, reward, and resulting Pro
+expiry; the code itself is omitted. Redemption consumes the code. A failed
+request exits 1; invalid input exits 2. The CLI never retries automatically, so
+check your account plan before retrying after an interrupted response.
+
 ## Update notifications
 
 When a newer `@pingroom/cli` is published the CLI prints a one-line notice on
