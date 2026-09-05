@@ -528,7 +528,7 @@ Full protocol: <https://pingroom.io/liveactivities.md>
 
 Use CLI **0.10.2 or newer** for redirect protection, protected-room joins, and
 acknowledgement, urgency, and idempotency options on `actions trigger`.
-For GitHub Actions, use `pingroom/cli@v0.10.2` or a newer release.
+For GitHub Actions, use `pingroom/cli@v0.10.3` or a newer release.
 
 `ask`, `context`, `timeout`, `api` and the `question-id` output were added in
 **v0.7.3**. Pin at least `pingroom/cli@v0.7.3` to use them. On an older pin —
