@@ -3,8 +3,8 @@
 Send PingRoom pings — and ask a human a question and block for their answer —
 from CI, scripts, and agents. Delivered as push straight to your phone.
 
-One dependency (`qrcode-terminal`, used only to draw the pairing QR). Works
-anywhere Node ≥ 20 runs.
+Works anywhere Node ≥ 20 runs. Uses `qrcode-terminal` to draw pairing QR codes
+and `proper-lockfile` to coordinate credential updates between processes.
 
 ## Install and first run
 
@@ -112,6 +112,13 @@ saved first, then the old one is revoked. Before starting another process,
 check whether a pairing is already waiting. Keep that process running and reuse
 its claim link until it expires. If you leave to install the app, return to that
 link instead of starting another pairing.
+
+If the CLI crashes after saving the replacement, it keeps using that connection;
+you do not need to reconnect. The old credential is saved as pending cleanup in
+the same atomic write. Bare `pingroom` and ordinary API commands retry revocation
+at the old credential's recorded API address, with a bounded timeout and at least
+a minute between failed attempts. Help and local setup commands stay offline.
+`logout` forgets the current connection while preserving any pending cleanup.
 
 For a supervisor that reads the link out of a log, `--json` makes stdout one
 JSON object per line (the credential is never printed):

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // @pingroom/cli — pings and human-in-the-loop questions for CI, scripts, agents.
-// Node's built-in fetch (Node >= 20) plus one optional dependency,
-// `qrcode-terminal`, used only to draw the pairing QR. Its absence degrades to
-// printing the pair URL, so every non-interactive path stays dependency-free.
+// Node's built-in fetch (Node >= 20), proper-lockfile for credential recovery,
+// and qrcode-terminal for the optional pairing QR rendering.
 //
 // Run bare (`pingroom`) it resolves its own auth: connected -> a status line and
 // this help; not connected -> the pairing picker. There is deliberately no
@@ -42,6 +41,7 @@ import { fail, stripControlChars } from '../lib/util.js';
 import { VERSION } from '../lib/version.js';
 import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
+import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
   parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
   parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
@@ -91,6 +91,14 @@ function waitFrom(handler, rest) {
   return handler(parseQArgs(rest));
 }
 
+// Local setup/help commands and latency-sensitive hooks stay offline. Ordinary
+// API commands resume previously authorized cleanup using its saved origin.
+const RECOVERY_COMMANDS = new Set([
+  'ping', 'ask', 'watch', 'await', 'cancel', 'list', 'handoff', 'handoffs',
+  'listen', 'redeem', 'activate', 'live', 'rooms', 'webhooks', 'actions',
+  'approval', 'attachment', 'pair', 'reconnect',
+]);
+
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -110,7 +118,9 @@ async function main() {
   // A leading flag with no subcommand (`pingroom --api …`) counts as bare — it
   // configures the connect attempt rather than naming a command.
   if (!command || command.startsWith('-')) {
-    const bareCode = await bare(parseConnectArgs(argv));
+    const args = parseConnectArgs(argv);
+    if (!args.help) await retryPendingRevocations();
+    const bareCode = await bare(args);
     await maybeNotifyUpdate(VERSION);
     process.exit(bareCode);
   }
@@ -118,6 +128,10 @@ async function main() {
   const handler = COMMANDS[command];
   if (!handler) {
     fail(`unknown command: ${command}\nRun "pingroom --help".`, EXIT.USAGE);
+  }
+
+  if (RECOVERY_COMMANDS.has(command) && !argv.includes('--help') && !argv.includes('-h')) {
+    await retryPendingRevocations();
   }
 
   const code = await handler(argv.slice(1));
