@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as parserModule from '../lib/parser.js';
+import { HELP } from '../lib/help.js';
 import { pairingBrowserUrl, pairingInstallUrl, pairingLinks, pairingQrUrl } from '../lib/commands/connect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -470,7 +471,7 @@ test('exit 0: no command prints help', () => {
 test('exit 0: --help prints help', () => {
   const { status, stdout } = run(['--help']);
   assert.equal(status, 0);
-  assert.match(stdout, /Exit codes: 0 on success/);
+  assert.equal(stdout, `${HELP}\n`, 'piped help must be flushed in full before exiting');
 });
 
 test('exit 0: -h prints help', () => {
@@ -769,6 +770,24 @@ test('exit 0: successful webhook delivery', async () => {
     assert.deepEqual(JSON.parse(received[0].body), {
       message: 'hello', requires_ack: true, ack_timeout_seconds: 45,
     });
+  } finally {
+    server.close();
+  }
+});
+
+test('ping --json flushes a response larger than the pipe buffer before exiting', async () => {
+  const receipt = JSON.stringify({ success: true, data: 'x'.repeat(256 * 1024) });
+  const { server, baseUrl } = await startServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(receipt);
+    });
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync(['ping', '-w', `${baseUrl}/hook`, '-m', 'hello', '--json']);
+    assert.equal(status, 0, stderr);
+    assert.equal(stdout, `${receipt}\n`);
   } finally {
     server.close();
   }

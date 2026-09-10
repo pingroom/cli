@@ -101,18 +101,27 @@ const RECOVERY_COMMANDS = new Set([
   'approval', 'attachment', 'pair', 'reconnect',
 ]);
 
+async function exitAfterOutput(code) {
+  // stdout/stderr may be asynchronous pipes. Drain queued output before the
+  // explicit exit, which also closes stdin left open by a pairing prompt.
+  await Promise.all([process.stdout, process.stderr].map((stream) => (
+    new Promise((resolve) => stream.write('', resolve))
+  )));
+  process.exit(code);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
 
   if (command === '-h' || command === '--help' || command === 'help') {
     process.stdout.write(`${HELP}\n`);
-    process.exit(EXIT.OK);
+    return exitAfterOutput(EXIT.OK);
   }
 
   if (command === '-v' || command === '--version') {
     process.stdout.write(`${VERSION}\n`);
-    process.exit(EXIT.OK);
+    return exitAfterOutput(EXIT.OK);
   }
 
   // Bare `pingroom` resolves the auth state instead of only printing help:
@@ -124,7 +133,7 @@ async function main() {
     if (!args.help) await retryPendingRevocations();
     const bareCode = await bare(args);
     await maybeNotifyUpdate(VERSION);
-    process.exit(bareCode);
+    return exitAfterOutput(bareCode);
   }
 
   const handler = COMMANDS[command];
@@ -140,7 +149,7 @@ async function main() {
   // After the command's own output, never before, and never in place of it:
   // the notice is advisory and must not lead. It cannot alter `code`.
   if (command !== 'update') await maybeNotifyUpdate(VERSION);
-  process.exit(code);
+  return exitAfterOutput(code);
 }
 
 // Anything that escapes a handler is a bug in this tool, not a usage error, but
