@@ -5726,3 +5726,55 @@ test('rooms create refuses --description on a private room', () => {
   assert.equal(status, 2);
   assert.match(stderr, /--description is only accepted on a public room/);
 });
+
+for (const mode of ['any', 'all']) {
+  test(`ping and quick action forward confirmation mode ${mode}`, async () => {
+    const bodies = [];
+    const server = createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      bodies.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, id: 'ping' }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      for (const args of [
+        ['ping', '-w', `${base}/hook`, '-m', 'Confirm', '--require-ack'],
+        ['ping', '--token', 'test', '--api', base, '--room', 'room12', '-m', 'Confirm', '--require-ack'],
+        ['actions', 'trigger', '1', '--token', 'test', '--api', base, '--room', 'room12', '--require-ack'],
+      ]) {
+        const result = await runAsync([...args, '--ack-mode', mode, '--json']);
+        assert.equal(result.status, 0, result.stderr);
+      }
+      assert.equal(bodies.length, 3);
+      for (const body of bodies) {
+        assert.equal(body.ack_mode, mode);
+        assert.equal(body.requires_ack, true);
+        assert.equal(body.is_urgent, undefined);
+      }
+    } finally { server.close(); }
+  });
+}
+
+test('confirmation flags fail locally for invalid modes and unsupported commands', () => {
+  for (const args of [
+    ['ping', '-m', 'Confirm', '--require-ack', '--ack-mode', 'majority'],
+    ['ping', '-m', 'Confirm', '--ack-mode', 'all'],
+    ['actions', 'trigger', '1', '--ack-mode', 'majority'],
+    ['actions', 'set', '1', '--ack-mode', 'all'],
+  ]) {
+    const result = run(args);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--ack-mode/);
+  }
+});
+
+test('update help works offline and describes check and JSON', () => {
+  const result = run(['update', '--help']);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /^update options:/);
+  assert.match(result.stdout, /--check/);
+  assert.match(result.stdout, /--json/);
+});

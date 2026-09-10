@@ -41,6 +41,9 @@ inputs:
     description: 'Keep the ping open until one eligible recipient acknowledges it, showing a lock-screen card with an Acknowledge button. Does not raise the interruption level on its own - set `urgent` too for an acknowledgement that also cuts through Focus.'
     required: false
     default: 'false'
+  ack-mode:
+    description: 'Confirmation rule: any (default) or all original eligible recipients. Requires require-ack: true.'
+    required: false
   ack-timeout:
     description: 'Optional acknowledgement deadline in seconds (requires `require-ack: true`).'
     required: false
@@ -136,6 +139,7 @@ runs:
         PR_ROOM: ${{ inputs.room }}
         PR_URGENT: ${{ inputs.urgent }}
         PR_REQUIRE_ACK: ${{ inputs.require-ack }}
+        PR_ACK_MODE: ${{ inputs.ack-mode }}
         PR_ACK_TIMEOUT: ${{ inputs.ack-timeout }}
         PR_HANDOFF: ${{ inputs.handoff }}
         PR_QUESTION: ${{ inputs.question }}
@@ -155,7 +159,7 @@ runs:
         set -o pipefail
         # Release gate: keep the Action on an npm-published version. Advance
         # this independently only after the matching CLI package is public.
-        CLI="npx --yes @pingroom/cli@0.10.3"
+        CLI="npx --yes @pingroom/cli@0.11.0"
 
         # Split an options input into the PR_OPTS array, one value:label spec per
         # element.
@@ -244,5 +248,6 @@ runs:
         [ -n "$PR_ROOM" ]   && args+=(--room "$PR_ROOM")
         [ "$PR_URGENT" = "true" ] && args+=(--urgent)
         [ "$PR_REQUIRE_ACK" = "true" ] && args+=(--require-ack)
+        [ -n "$PR_ACK_MODE" ] && args+=(--ack-mode "$PR_ACK_MODE")
         [ -n "$PR_ACK_TIMEOUT" ] && args+=(--ack-timeout "$PR_ACK_TIMEOUT")
         $CLI "${args[@]}"

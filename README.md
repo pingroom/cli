@@ -247,6 +247,7 @@ pingroom ping [options]
       --location-label <t>  Location label (<= 100 chars; requires --location)
       --location-address <t> Address (<= 255 chars; requires --location)
       --require-ack      Keep the ping open until an eligible recipient acknowledges it
+      --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL)
@@ -279,11 +280,13 @@ with `--data`, the explicit flags replace only `data.location`; sibling keys are
 preserved.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
-acknowledge it wins; `--ack-timeout` optionally expires it if nobody responds:
+acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
+for every original eligible recipient; `--ack-timeout` expires the ping if its
+confirmation rule is still unmet:
 
 ```bash
 pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Production health check failed" \
-  --require-ack --ack-timeout 300
+  --require-ack --ack-mode all --ack-timeout 300
 ```
 
 Webhook timeouts accept 1–86400 seconds. Agent-token room pings accept
@@ -535,7 +538,7 @@ Full protocol: <https://pingroom.io/liveactivities.md>
 
 Use CLI **0.10.2 or newer** for redirect protection, protected-room joins, and
 acknowledgement, urgency, and idempotency options on `actions trigger`.
-For GitHub Actions, use `pingroom/cli@v0.10.3` or a newer release.
+For GitHub Actions, use `pingroom/cli@v0.11.0` or a newer release.
 
 `ask`, `context`, `timeout`, `api` and the `question-id` output were added in
 **v0.7.3**. Pin at least `pingroom/cli@v0.7.3` to use them. On an older pin —
@@ -802,3 +805,19 @@ silent and can never change a command's output or exit code.
 ## License
 
 MIT
+
+
+## Update the CLI
+
+Run `pingroom update` to install the latest stable release into the current npm
+global installation. `pingroom update --check` checks without installing; add
+`--json` for a single machine-readable result. It preserves the saved connection
+and respects your npm registry and minimum release age settings. It returns a
+nonzero exit code if npm fails or the install cannot be verified.
+
+For a project dependency, use `npm install @pingroom/cli@latest` in that project.
+For npx, use `npx @pingroom/cli@latest`. Source checkouts use git.
+
+`--ack-mode any|all` also works on `pingroom actions trigger`; it applies to that
+press only and leaves the saved action unchanged. The GitHub Action accepts
+`ack-mode: all` alongside `require-ack: 'true'`. Existing calls default to `any`.

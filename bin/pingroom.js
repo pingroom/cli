@@ -45,7 +45,7 @@ import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
   parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
   parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
-  parseReconnectArgs, parseRedeemArgs, parseSkillsArgs,
+  parseReconnectArgs, parseRedeemArgs, parseSkillsArgs, parseUpdateArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
 import { ping } from '../lib/commands/ping.js';
@@ -56,6 +56,7 @@ import { live } from '../lib/commands/live.js';
 import { hook } from '../lib/commands/hook.js';
 import { mcp } from '../lib/commands/mcp.js';
 import { skills } from '../lib/commands/skills.js';
+import { update } from '../lib/commands/update.js';
 import { redeem } from '../lib/commands/redeem.js';
 import { activateStoredInbox, bare, pair, reconnect } from '../lib/commands/connect.js';
 import { config, logout } from '../lib/commands/config.js';
@@ -73,6 +74,7 @@ const COMMANDS = {
   hook: (rest) => hook(parseHookArgs(rest)),
   mcp,
   skills: (rest) => skills(parseSkillsArgs(rest)),
+  update: (rest) => update(parseUpdateArgs(rest)),
   redeem: (rest) => redeem(parseRedeemArgs(rest)),
   activate: (rest) => activateStoredInbox(parseQArgs(rest)),
   live: (rest) => live(parseLiveArgs(rest)),
@@ -137,7 +139,7 @@ async function main() {
   const code = await handler(argv.slice(1));
   // After the command's own output, never before, and never in place of it:
   // the notice is advisory and must not lead. It cannot alter `code`.
-  await maybeNotifyUpdate(VERSION);
+  if (command !== 'update') await maybeNotifyUpdate(VERSION);
   process.exit(code);
 }
 
