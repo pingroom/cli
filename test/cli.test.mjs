@@ -603,7 +603,7 @@ test('exit 2: missing --message', () => {
 });
 
 test('exit 2: bad --action (out of range)', () => {
-  const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', '-a', '7']);
+  const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', '-a', '17']);
   assert.equal(status, 2);
   assert.match(stderr, /--action must be an integer/);
 });
@@ -4950,7 +4950,7 @@ test('each management noun prints its own help', () => {
   for (const [noun, marker] of [
     ['rooms', /rooms create -n <name>/],
     ['webhooks', /Prints the secret trigger URL once/],
-    ['actions', /actions set <1-4>/],
+    ['actions', /actions set <1-16>/],
     ['approval', /exit 0 approve · 4 deny/],
     ['attachment', /attachment get <id>/],
   ]) {
@@ -5216,10 +5216,95 @@ test('approval sends Idempotency-Key as a header, never in the body', async () =
   assert.match(unsafe.stderr, /--idempotency-key must be/);
 });
 
+test('quick ping page slots reach ping, live, action, and webhook endpoints unchanged', async () => {
+  const slots = [4, 5, 8, 9, 12, 13, 16];
+  const routes = {
+    'POST /hook': () => ({ body: { success: true } }),
+    'POST /api/agent/rooms/AB12/notifications': () => ({ body: { success: true } }),
+    'POST /api/agent/rooms/AB12/live': () => ({ body: { state: 'running' } }),
+    'POST /api/agent/rooms/AB12/webhooks': () => ({ body: { id: 'hook' } }),
+    'PUT /api/agent/rooms/AB12/webhooks/hook': () => ({ body: { id: 'hook' } }),
+  };
+  for (const slot of slots) {
+    routes[`PUT /api/agent/rooms/AB12/actions/${slot}`] = () => ({ body: { action_number: slot } });
+    routes[`POST /api/agent/rooms/AB12/actions/${slot}/trigger`] = () => ({ body: { success: true } });
+  }
+  const { server, baseUrl, received } = await questionServer(routes);
+  try {
+    for (const slot of slots) {
+      const auth = ['--token', 'tok', '--api', baseUrl, '--room', 'AB12'];
+      for (const args of [
+        ['ping', '-w', `${baseUrl}/hook`, '-m', 'Ready', '-a', String(slot)],
+        ['ping', ...auth, '-m', 'Ready', '-a', String(slot)],
+        ['actions', 'set', String(slot), ...auth, '--label', '', '--icon', '✅'],
+        ['actions', 'trigger', String(slot), ...auth],
+        ['live', 'start', ...auth, '-c', 'stream', '-a', String(slot)],
+        ['live', 'start', '-w', `${baseUrl}/hook`, '-c', 'stream', '-a', String(slot)],
+        ['webhooks', 'create', ...auth, '--name', 'Build', '--action', String(slot)],
+        ['webhooks', 'update', 'hook', ...auth, '--action', String(slot)],
+      ]) {
+        const result = await runAsync(args);
+        assert.equal(result.status, 0, result.stderr);
+      }
+      const requests = received.slice(-8);
+      assert.equal(JSON.parse(requests[0].body).action, slot);
+      assert.equal(JSON.parse(requests[1].body).action_number, slot);
+      assert.equal(requests[2].path, `/api/agent/rooms/AB12/actions/${slot}`);
+      assert.deepEqual(JSON.parse(requests[2].body), { label: '', icon: '✅' });
+      assert.equal(requests[3].path, `/api/agent/rooms/AB12/actions/${slot}/trigger`);
+      assert.equal(JSON.parse(requests[4].body).action, slot);
+      assert.equal(JSON.parse(requests[5].body).action, slot);
+      assert.equal(JSON.parse(requests[6].body).action_number, slot);
+      assert.equal(JSON.parse(requests[7].body).action_number, slot);
+    }
+    assert.equal(received.length, slots.length * 8);
+  } finally {
+    server.close();
+  }
+});
+
+test('actions set-all preserves four-slot and full 16-slot batches in one request', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'PUT /api/agent/rooms/AB12/actions': (body) => ({ body: JSON.parse(body).actions }),
+  });
+  try {
+    for (const count of [4, 16]) {
+      const actions = Array.from({ length: count }, (_, i) => ({ action_number: i + 1, label: '', icon: '✅' }));
+      const result = await runAsync(['actions', 'set-all', '--token', 'tok', '--api', baseUrl, '--room', 'AB12', '--actions', JSON.stringify(actions)]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(received.at(-1).body), { actions });
+      assert.deepEqual(JSON.parse(result.stdout), actions);
+    }
+    assert.equal(received.length, 2);
+  } finally {
+    server.close();
+  }
+});
+
+test('extra quick ping pages retain server plan errors and reject invalid slots locally', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/AB12/actions/5/trigger': () => ({ status: 403, body: { code: 'pro_required', message: 'This Quick Ping page requires Pro.' } }),
+  });
+  try {
+    const result = await runAsync(['actions', 'trigger', '5', '--token', 'tok', '--api', baseUrl, '--room', 'AB12']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /requires Pro/);
+    assert.equal(received.length, 1);
+    for (const slot of ['0', '17', '1.5', '01', 'NaN']) {
+      const invalid = await runAsync(['ping', '-w', `${baseUrl}/hook`, '-m', 'Ready', '-a', slot]);
+      assert.equal(invalid.status, 2);
+      assert.match(invalid.stderr, /integer 1–16/);
+    }
+    assert.equal(received.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
 test('actions set validates the slot and required fields locally', () => {
-  const badSlot = run(['actions', 'set', '9', '--token', 'x'.repeat(40), '--room', 'ABC123']);
+  const badSlot = run(['actions', 'set', '17', '--token', 'x'.repeat(40), '--room', 'ABC123']);
   assert.equal(badSlot.status, 2);
-  assert.match(badSlot.stderr, /actions set <1-4>/);
+  assert.match(badSlot.stderr, /actions set <1-16>/);
 
   const missing = run(['actions', 'set', '2', '--token', 'x'.repeat(40), '--room', 'ABC123']);
   assert.equal(missing.status, 2);
@@ -5245,9 +5330,9 @@ test('actions set-all validates the batch locally before spending a request', ()
   assert.equal(badJson.status, 2);
   assert.match(badJson.stderr, /--set must be valid JSON/);
 
-  const badSlot = run(['actions', 'set-all', ...token, '--set', '{"action_number":9,"label":"x","icon":"y"}']);
+  const badSlot = run(['actions', 'set-all', ...token, '--set', '{"action_number":17,"label":"x","icon":"y"}']);
   assert.equal(badSlot.status, 2);
-  assert.match(badSlot.stderr, /action_number must be 1-4/);
+  assert.match(badSlot.stderr, /action_number must be 1-16/);
 
   // Two entries for one slot would let the last silently win, and the caller
   // would never learn which of its two definitions was stored.
@@ -5272,10 +5357,10 @@ test('actions set-all validates the batch locally before spending a request', ()
 
   const tooMany = run([
     'actions', 'set-all', ...token,
-    '--actions', '[{"action_number":1,"label":"a","icon":"1"},{"action_number":2,"label":"b","icon":"2"},{"action_number":3,"label":"c","icon":"3"},{"action_number":4,"label":"d","icon":"4"},{"action_number":1,"label":"e","icon":"5"}]',
+    '--actions', JSON.stringify(Array.from({ length: 17 }, (_, i) => ({ action_number: i + 1, label: 'Ready', icon: '✅' }))),
   ]);
   assert.equal(tooMany.status, 2);
-  assert.match(tooMany.stderr, /only 4 action slots/);
+  assert.match(tooMany.stderr, /at most 16 action slots/);
 
   const notArray = run(['actions', 'set-all', ...token, '--actions', '{"action_number":1}']);
   assert.equal(notArray.status, 2);

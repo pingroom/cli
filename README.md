@@ -142,7 +142,7 @@ pingroom ping [options]
 
   -m, --message <text>   Ping body (required; <= 120 private / <= 160 public)
   -t, --title <text>     Ping title (<= 40 chars)
-  -a, --action <1-4>     Quick-action slot to attribute the ping to
+  -a, --action <1-16>     Quick-action slot to attribute the ping to
   -d, --data <json>      Extra JSON data, e.g. '{"commit":"abc123"}'
       --url <https-url>  Make the ping a tappable link (absolute http(s) URL)
       --button-label <t> Link button text (<= 26 chars; requires --url)
@@ -333,7 +333,7 @@ pingroom live <start|update|end|get> [options]
       --failed               end only: finish as failed instead of done
   -d, --data <json>          Structured data object carried on this frame
   -t, --title <text>         Card title (<= 40 chars)
-  -a, --action <1-4>         Quick-action slot supplying the icon and sound
+  -a, --action <1-16>         Quick-action slot supplying the icon and sound
       --require-ack          Add an Acknowledge button
       --ack-timeout <s>      Ack deadline in seconds
   -w, --webhook <url>        Room webhook URL instead of a token
