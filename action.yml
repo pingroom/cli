@@ -22,7 +22,7 @@ inputs:
     description: 'Ping title (<= 40 chars).'
     required: false
   action:
-    description: 'Quick-action slot 1–4 to attribute the ping to.'
+    description: 'Quick-action slot 1–16 to attribute the ping to (5–16 need the room owner on Pro).'
     required: false
   data:
     description: 'Extra JSON data object, e.g. {"commit":"abc123"}.'
@@ -34,7 +34,7 @@ inputs:
     description: 'Link button text (<= 26 chars; requires `url`).'
     required: false
   urgent:
-    description: 'Deliver the ping time-sensitive so it breaks through Focus / Do Not Disturb. Delivery priority only - independent of `require-ack`, and it asks nothing of the recipient.'
+    description: 'Deliver the ping time-sensitive so it breaks through Focus / Do Not Disturb and reaches members who muted the room or you (a block still wins). Delivery priority only - independent of `require-ack`, and it asks nothing of the recipient.'
     required: false
     default: 'false'
   require-ack:
@@ -159,7 +159,7 @@ runs:
         set -o pipefail
         # Release gate: keep the Action on an npm-published version. Advance
         # this independently only after the matching CLI package is public.
-        CLI="npx --yes @pingroom/cli@0.11.2"
+        CLI="npx --yes @pingroom/cli@0.12.0"
 
         # Split an options input into the PR_OPTS array, one value:label spec per
         # element.

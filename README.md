@@ -443,9 +443,18 @@ pingroom webhooks create --room GZNFB6BZGJIH --name "CI" --action 2   # prints t
 pingroom webhooks update <id> --room GZNFB6BZGJIH --enabled false
 pingroom webhooks delete <id> --room GZNFB6BZGJIH
 
-pingroom actions list --room GZNFB6BZGJIH
+pingroom actions list --room GZNFB6BZGJIH                   # shows [needs location|link|file|photo|pdf] and (disabled) slots
 pingroom actions set 3 --room GZNFB6BZGJIH --label "Deploy done" --icon 🚀
+pingroom actions set 2 --room GZNFB6BZGJIH --label "Where?" --icon 📍 --input-type location
+pingroom actions set 4 --room GZNFB6BZGJIH --label "" --icon ""   # reserve the slot, disabled
 pingroom actions trigger 3 --room GZNFB6BZGJIH
+# A slot with an input type needs its detail or the press is refused (nothing is sent):
+pingroom actions trigger 2 --room GZNFB6BZGJIH --location "25.2048,55.2708" --location-label "Dubai Mall"
+pingroom actions trigger 2 --room GZNFB6BZGJIH --url https://ci.example.com/run/42
+pingroom actions trigger 2 --room GZNFB6BZGJIH --attach report.pdf          # file / photo / pdf (Pro)
+pingroom actions layout --room GZNFB6BZGJIH --page-order 1,3   # keep pages 1 and 3, delete the rest (owner on Pro)
+pingroom rooms create -n "Meetup" --icon globe --color "#0391fe" --public --handle meetup \
+  --location "25.2048,55.2708" --location-name "Dubai Mall"    # listed in nearby discovery
 
 pingroom approval -p "Ship v2 to production?" --wait   # exit 0 approved · 4 denied · 3 expired
 
@@ -455,6 +464,18 @@ pingroom attachment delete <id>
 
 Creating webhooks and uploading attachments require a Pro account; public-room
 creation runs under its own consent scope (`pingroom:rooms:publish`).
+
+**Quick pings that need a detail.** An action's `input_type` (`none`, `location`,
+`link`, `file`, `photo`, `pdf`) makes every press carry a detail. `actions list`
+shows it; a press without the matching flag is refused with
+`quick_action_input_required` and the CLI prints which flag to add. `--attach`
+uploads first and sends only the ids (photo takes jpg/jpeg/png, pdf takes .pdf —
+a mismatch is `quick_action_input_type`). `--quick-action-id <uuid>` (the `id`
+from `actions list --json`) makes the press refuse with
+`quick_action_layout_changed` if the slot moved pages since you read it. A slot
+whose label and icon are both empty is reserved but disabled and answers
+`action_not_configured`; `actions layout --page-order` rewrites the pages from a
+fresh read so nothing is renumbered blind.
 
 ## GitHub Actions
 
@@ -517,6 +538,9 @@ creation runs under its own consent scope (`pingroom:rooms:publish`).
 
 Use CLI **0.10.2 or newer** for redirect protection, protected-room joins, and
 acknowledgement, urgency, and idempotency options on `actions trigger`.
+Use **0.12.0 or newer** for quick ping input details (`actions trigger
+--location / --url / --attach`, `actions set --input-type`), `actions layout`,
+and `rooms create --location`.
 For GitHub Actions, use `pingroom/cli@v0.11.0` or a newer release.
 
 `ask`, `context`, `timeout`, `api` and the `question-id` output were added in
