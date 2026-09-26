@@ -959,6 +959,29 @@ test('exit 0: webhook location flags replace raw data.location and preserve sibl
   }
 });
 
+test('an unknown room says so instead of a bare "Resource not found"', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    received.push(req.url);
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Resource not found.' }));
+    });
+  });
+  try {
+    const { status, stderr } = await runAsync([
+      'ping', '--token', 'tok_abc', '--room', ' #https://pgr.link/j/ab12cd ', '--api', baseUrl, '-m', 'hi',
+    ]);
+    assert.notEqual(status, 0);
+    assert.equal(received[0], '/api/agent/rooms/ab12cd/notifications');
+    assert.match(stderr, /No room with code ab12cd/);
+    assert.match(stderr, /pingroom rooms list/);
+  } finally {
+    server.close();
+  }
+});
+
 test('exit 0: successful agent-token delivery via --api override', async () => {
   const received = [];
   const { server, baseUrl } = await startServer((req, res) => {
