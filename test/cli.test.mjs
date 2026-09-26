@@ -4249,6 +4249,33 @@ test('help advertises the attachment type, size, and count contract', () => {
   assert.match(stdout, /repeat for up to 4/);
 });
 
+test('file delivery uses the same room for an explicit code, pasted link, and paired default', async () => {
+  const home = newHome();
+  const file = join(home, 'report.txt');
+  writeFileSync(file, 'room resolution regression');
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/attachments': () => ({ status: 201, body: { attachment: { id: 'att-1' } } }),
+    'POST /api/agent/rooms/ABC123/notifications': () => ({ status: 201, body: { id: 'ping-1' } }),
+  });
+  seedCredential(home, { token: 'paired-token', api_url: baseUrl, room: { invite_code: 'ABC123' } });
+  try {
+    for (const roomArgs of [[], ['--room', 'ABC123'], ['--room', ' #ABC123 '], ['--room', 'https://pgr.link/j/ABC123']]) {
+      const result = await runAsync(['ping', '-m', 'File ready', '--attach', file, ...roomArgs], { PINGROOM_HOME: home });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    const deliveries = received.filter((request) => request.path.endsWith('/notifications'));
+    assert.equal(deliveries.length, 4);
+    for (const request of deliveries) {
+      assert.equal(request.path, '/api/agent/rooms/ABC123/notifications');
+      assert.deepEqual(JSON.parse(request.body), { message: 'File ready', attachment_ids: ['att-1'] });
+    }
+    assert.equal(received.filter((request) => request.path.endsWith('/attachments')).length, 4);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('--attach uploads each file as multipart and sends only the ids', async () => {
   const uploads = [];
   let pingBody = null;
