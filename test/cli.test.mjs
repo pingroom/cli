@@ -2120,6 +2120,36 @@ test('hook PreToolUse shows the whole command, with hidden characters made visib
   }
 });
 
+test('hook PreToolUse does not drop unknown-tool fields named like Bash or Read metadata', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_u', state: 'pending' } }),
+    'GET /api/agent/questions/q_u/wait': () => ({ status: 200, body: { id: 'q_u', state: 'answered', answer: { value: 'allow' } } }),
+  });
+  try {
+    for (const tool_input of [
+      { command: 'preview', description: 'HIDDEN_EFFECT_SENTINEL' },
+      { command: 'preview', timeout: 1, run_in_background: true },
+      { file_path: 'a', offset: 7, limit: 9 },
+    ]) {
+      const tool_name = 'mcp__demo__execute';
+      const result = await runHook(['--api', baseUrl], {
+        hook_event_name: 'PreToolUse', tool_name, tool_input,
+      }, { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' });
+      assert.equal(result.status, 0);
+      assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'allow');
+      const request = received.filter((r) => r.path.endsWith('/questions')).at(-1);
+      assert.equal(JSON.parse(request.body).prompt, `Run ${tool_name}: ${JSON.stringify(tool_input)}?`);
+    }
+    const before = received.length;
+    const result = await runHook(['--api', baseUrl], {
+      hook_event_name: 'PreToolUse', tool_name: 'mcp__demo__execute',
+      tool_input: { command: 'preview', description: 'x'.repeat(200) },
+    }, { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' });
+    assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(received.length, before, 'oversized complete input must stay local');
+  } finally { server.close(); }
+});
+
 test('hook PreToolUse defers to the local prompt when there is no tool input to show', async () => {
   const { server, baseUrl, received } = await questionServer({});
   try {

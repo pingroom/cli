@@ -598,9 +598,9 @@ curl -fsS -X POST "$PINGROOM_WEBHOOK_URL" \
 ## Claude Code integration (get pinged by your agent)
 
 Wire PingRoom into [Claude Code](https://claude.com/claude-code) hooks so your
-agent pings your phone when it finishes — and asks for your approval, on your
-lock screen, before it runs a command. Approve or Deny with a tap; the agent
-waits for your answer and continues.
+agent pings your phone when it finishes and asks for approval before running a
+command. Open the notification in PingRoom, review the complete tool input,
+then choose Approve or Deny. The agent waits for your answer.
 
 Print a ready-to-paste config:
 
@@ -629,7 +629,7 @@ export PINGROOM_ROOM="<room invite code>"
 | `Stop` / `SubagentStop` | Pings the room with the agent's last message (“Claude finished”). |
 | `Notification` | Pings when the agent is idle or waiting for input (permission prompts are skipped — the `PreToolUse` question already covers those). |
 | `SessionEnd` | Pings when a session ends (except `/clear`). |
-| `PreToolUse` | Asks a PingRoom **question** and gates the tool call on your Approve/Deny tap. Which tools are gated is the settings.json `matcher` (default `Bash`) — not the CLI. |
+| `PreToolUse` | Asks a PingRoom **question** and waits for you to review and Approve/Deny it in the app. Which tools are gated is the settings.json `matcher` (default `Bash`) — not the CLI. |
 
 **It always fails open.** If PingRoom is unreachable, the token/room is missing,
 or the question expires, the hook defers to the normal local prompt
@@ -640,7 +640,9 @@ tune the approval-question expiry with `--ttl <seconds>` (default 900).
 
 **It never asks you to approve what you can't see.** The question shows the
 tool call in full — line breaks and invisible characters escaped, and the whole
-JSON input whenever it has more than the command (or a Read's path). A call
+JSON input for unknown tools or additional execution settings. The app's answer
+sheet scrolls the full prompt at any text size. Lock-screen, Watch, Live Activity
+and Telegram previews cannot approve these tool calls. A call
 whose prompt would exceed 160 display columns (CJK and emoji count as two) is
 never shortened: it skips the phone and goes straight to the local prompt.
 
