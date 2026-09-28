@@ -638,6 +638,18 @@ blocks the agent. Because the `PreToolUse` hook holds the tool call open while i
 waits for you, give it a generous `timeout` (the printed config uses 960s) and
 tune the approval-question expiry with `--ttl <seconds>` (default 900).
 
+**It never asks you to approve what you can't see.** The question shows the
+tool call in full — line breaks and invisible characters escaped, and the whole
+JSON input whenever it has more than the command (or a Read's path). A call
+whose prompt would exceed 160 display columns (CJK and emoji count as two) is
+never shortened: it skips the phone and goes straight to the local prompt.
+
+**File content never leaves your machine this way.** A question reaches every
+room member's push, the room's outgoing webhook and its Telegram mirror, so
+`Write`, `Edit`, `MultiEdit` and `NotebookEdit` calls — and any tool whose input
+carries `content`, `old_string`, `new_string`, `new_source` or `edits` — are
+always approved at the local prompt, even when the `matcher` routes them here.
+
 ## MCP client setup
 
 Print the canonical remote endpoint, copy-ready Codex and Claude Code commands,

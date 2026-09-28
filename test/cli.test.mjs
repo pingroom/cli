@@ -2020,6 +2020,122 @@ test('hook PreToolUse returns deny when the human denies', async () => {
   }
 });
 
+test('hook PreToolUse never asks the phone to approve a command it cannot show in full', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_l', state: 'pending' } }),
+    'GET /api/agent/questions/q_l/wait': () => ({ status: 200, body: { id: 'q_l', state: 'answered', answer: { value: 'allow' } } }),
+  });
+  try {
+    const command = `echo ${'x'.repeat(200)} && echo HIDDEN_TAIL_SENTINEL`;
+    const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } };
+    const { status, stdout } = await runHook(
+      ['--api', baseUrl], event,
+      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+    );
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(received.length, 0, 'a prompt the human could only see part of must never be sent');
+  } finally {
+    server.close();
+  }
+});
+
+test('hook PreToolUse budgets the prompt by display width, so wide glyphs cannot overflow the card', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_w', state: 'pending' } }),
+    'GET /api/agent/questions/q_w/wait': () => ({ status: 200, body: { id: 'q_w', state: 'answered', answer: { value: 'deny' } } }),
+  });
+  try {
+    const env = { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' };
+    // 91 code points (well under a character budget) but 172 display columns.
+    const wide = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `echo ${'漢'.repeat(81)}🚀` } };
+    const refused = await runHook(['--api', baseUrl], wide, env);
+    assert.equal(refused.status, 0);
+    assert.equal(JSON.parse(refused.stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(received.length, 0, 'a prompt wider than the card must never be sent');
+
+    // The same number of narrow columns fits.
+    const narrow = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `echo ${'x'.repeat(140)}` } };
+    const asked = await runHook(['--api', baseUrl], narrow, env);
+    assert.equal(asked.status, 0);
+    assert.equal(received.filter((r) => r.path === '/api/agent/rooms/ab12cd/questions').length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('hook PreToolUse keeps file content off the phone and approves those calls locally', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const env = { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' };
+    const calls = [
+      ['Write', { file_path: '.env', content: 'API_KEY=sk_live_SECRET' }],
+      ['Edit', { file_path: 'a.js', old_string: 'a', new_string: 'b' }],
+      ['MultiEdit', { file_path: 'a.js', edits: [{ old_string: 'a', new_string: 'b' }] }],
+      ['NotebookEdit', { notebook_path: 'n.ipynb', new_source: 'print(1)' }],
+      // An unknown tool is judged by what its input carries, nested or not.
+      ['mcp__fs__save', { target: 'x', payload: { content: 'SECRET' } }],
+    ];
+    for (const [tool_name, tool_input] of calls) {
+      const { status, stdout } = await runHook(
+        ['--api', baseUrl], { hook_event_name: 'PreToolUse', tool_name, tool_input }, env,
+      );
+      assert.equal(status, 0);
+      const out = JSON.parse(stdout).hookSpecificOutput;
+      assert.equal(out.permissionDecision, 'ask', tool_name);
+      assert.match(out.permissionDecisionReason, /file content/);
+    }
+    assert.equal(received.length, 0, 'file content must never reach the room');
+  } finally {
+    server.close();
+  }
+});
+
+test('hook PreToolUse shows the whole command, with hidden characters made visible', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_v', state: 'pending' } }),
+    'GET /api/agent/questions/q_v/wait': () => ({ status: 200, body: { id: 'q_v', state: 'answered', answer: { value: 'deny' } } }),
+  });
+  try {
+    const cases = [
+      // A newline would otherwise fold the second command into the comment.
+      [{ command: 'echo ok # note\nrm -rf ~', description: 'Say ok' }, 'Run Bash: echo ok # note\\nrm -rf ~?'],
+      // A bidi override would otherwise reorder what the human reads.
+      [{ command: 'ls \u202Etxt.exe' }, 'Run Bash: ls \\u{202E}txt.exe?'],
+      // A key that changes what runs means the whole input is shown.
+      [{ command: 'ls', dangerouslyDisableSandbox: true }, 'Run Bash: {"command":"ls","dangerouslyDisableSandbox":true}?'],
+    ];
+    for (const [toolInput, prompt] of cases) {
+      const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: toolInput };
+      const { status } = await runHook(
+        ['--api', baseUrl], event,
+        { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+      );
+      assert.equal(status, 0);
+      const asked = received.filter((r) => r.path === '/api/agent/rooms/ab12cd/questions').at(-1);
+      assert.equal(JSON.parse(asked.body).prompt, prompt);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('hook PreToolUse defers to the local prompt when there is no tool input to show', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash' };
+    const { status, stdout } = await runHook(
+      ['--api', baseUrl], event,
+      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+    );
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
 test('hook PreToolUse fails open to "ask" when the question expires', async () => {
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_x', state: 'pending' } }),
