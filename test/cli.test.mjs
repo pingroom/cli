@@ -6344,6 +6344,21 @@ test('decision polling survives a rate limit and a temporary server failure', as
   } finally { server.close(); }
 });
 
+test('decision polling reports a non-JSON answer instead of retrying it forever', async () => {
+  let polls = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    polls += 1;
+    res.writeHead(403, { 'Content-Type': 'text/html' });
+    res.end('<html><body>Access denied</body></html>');
+  });
+  try {
+    const { status, stderr } = await runAsync(['watch', '--token', 'tok', '--api', baseUrl, 'q_1'], {}, { timeoutMs: 10_000 });
+    assert.notEqual(status, 0);
+    assert.match(stderr, /untrusted JSON response \(HTTP 403\)/);
+    assert.equal(polls, 1);
+  } finally { server.close(); }
+});
+
 test('hook cancels its phone question before deferring a failed wait to a local prompt', async () => {
   const { server, baseUrl, received } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_x', state: 'pending' } }),
