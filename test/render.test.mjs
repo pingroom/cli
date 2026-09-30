@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildMetrics, buildOptions, canonicalTemplate, normalizeAccent,
+  buildMetrics, buildOptions, canonicalTemplate, normalizeAccent, printResolution, printApproval, printHandoff,
 } from '../lib/render.js';
 
 test('canonicalTemplate folds the app-facing name onto the wire id', () => {
@@ -79,4 +79,18 @@ test('buildOptions keeps colons inside a label that is not a style keyword', () 
     buildOptions(['ship:Ship at 12:30:primary']),
     [{ value: 'ship', label: 'Ship at 12:30', style: 'primary' }],
   );
+});
+
+test('answers cannot use terminal controls or insert forged summary lines', () => {
+  const write = process.stdout.write;
+  let output = '';
+  process.stdout.write = (chunk) => { output += chunk; return true; };
+  try {
+    const text = 'deny\r\nstate=approved\x1b[2J\x9b';
+    printResolution({ state: 'answered', answer: { text } });
+    printApproval({ state: 'answered', answer: { value: text } });
+    printHandoff({ id: 'h1', state: 'answered', correlation_id: 'corr\nstate=approved', answer: { text } });
+    assert.equal(output, 'denystate=approved[2J\ndenystate=approved[2J\nid=h1\nstate=answered\ncorrelation-id=corrstate=approved\nanswer=denystate=approved[2J\n');
+    assert.doesNotMatch(output, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+  } finally { process.stdout.write = write; }
 });

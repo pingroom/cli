@@ -1369,8 +1369,8 @@ test('ask --github-output writes the answered question through the delimiter pro
       '--github-output', outputPath, '-p', 'Deploy?', '-o', 'approve:Approve', '-o', 'hold:Hold',
     ]);
     assert.equal(status, 0, stderr);
-    // The stdout contract for `$(pingroom ask --wait ...)` is unchanged.
-    assert.equal(stdout, `${maliciousAnswer}\n`);
+    // Terminal controls are removed; the GitHub output file retains the original answer.
+    assert.equal(stdout, `${maliciousAnswer.replace(/[\u0000-\u001F\u007F-\u009F]/g, '')}\n`);
 
     const raw = readFileSync(outputPath, 'utf8');
     assert.match(raw, /^question-id<<pingroom_[0-9a-f]{48}$/m);
@@ -1515,8 +1515,9 @@ test('github output protocol contains malicious multiline answers without output
     ]);
     assert.equal(status, 0, stderr);
 
-    // Preserve the normal key=value stdout contract for non-Action callers.
-    assert.match(stdout, /answer=ok\nstate=acked\r\nanswer=owned/);
+    // Terminal output is one sanitized value per line; the GitHub file retains the exact answer.
+    assert.match(stdout, /answer=okstate=ackedanswer=owned/);
+    assert.equal(stdout.split('\n').filter((line) => line.startsWith('state=')).length, 1);
 
     const raw = readFileSync(outputPath, 'utf8');
     assert.match(raw, /^handoff-id<<pingroom_[0-9a-f]{48}$/m);
@@ -6310,4 +6311,17 @@ test('--data larger than 8 KB never leaves the machine', () => {
   const { status, stderr } = run(['ping', '-m', 'hi', '--token', 'x'.repeat(40), '--room', 'ab12cd', '--data', big]);
   assert.equal(status, 2);
   assert.match(stderr, /--data must serialize to at most 8 KB/);
+});
+
+test('list sanitizes untrusted prompts and answers before terminal output', async () => {
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions': () => ({ status: 200, body: { questions: [
+      { id: 'q_1', state: 'answered', prompt: 'Ship?\x1b[2J\nforged', answer: { value: 'deny\rapproved\x9b' } },
+    ] } }),
+  });
+  try {
+    const { status, stdout } = await runAsync(['list', '--token', 'tok', '--api', baseUrl]);
+    assert.equal(status, 0);
+    assert.equal(stdout, 'q_1  answered   Ship?[2Jforged → denyapproved\n');
+  } finally { server.close(); }
 });
