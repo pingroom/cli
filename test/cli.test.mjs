@@ -1370,7 +1370,7 @@ test('ask --github-output writes the answered question through the delimiter pro
     ]);
     assert.equal(status, 0, stderr);
     // Terminal controls are removed; the GitHub output file retains the original answer.
-    assert.equal(stdout, `${maliciousAnswer.replace(/[\u0000-\u001F\u007F-\u009F]/g, '')}\n`);
+    assert.equal(stdout, 'approve state=answered question-id=owned EOF_like\n');
 
     const raw = readFileSync(outputPath, 'utf8');
     assert.match(raw, /^question-id<<pingroom_[0-9a-f]{48}$/m);
@@ -1516,7 +1516,7 @@ test('github output protocol contains malicious multiline answers without output
     assert.equal(status, 0, stderr);
 
     // Terminal output is one sanitized value per line; the GitHub file retains the exact answer.
-    assert.match(stdout, /answer=okstate=ackedanswer=owned/);
+    assert.match(stdout, /answer=ok state=acked answer=owned/);
     assert.equal(stdout.split('\n').filter((line) => line.startsWith('state=')).length, 1);
 
     const raw = readFileSync(outputPath, 'utf8');
@@ -6322,7 +6322,7 @@ test('list sanitizes untrusted prompts and answers before terminal output', asyn
   try {
     const { status, stdout } = await runAsync(['list', '--token', 'tok', '--api', baseUrl]);
     assert.equal(status, 0);
-    assert.equal(stdout, 'q_1  answered   Ship?[2Jforged → denyapproved\n');
+    assert.equal(stdout, 'q_1  answered   Ship?[2J forged → deny approved\n');
   } finally { server.close(); }
 });
 

@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   buildMetrics, buildOptions, canonicalTemplate, normalizeAccent, printResolution, printApproval, printHandoff,
 } from '../lib/render.js';
+import { stripControlChars } from '../lib/util.js';
 
 test('canonicalTemplate folds the app-facing name onto the wire id', () => {
   // "Decision" is what a person reads in the app; `question` is what the API
@@ -90,7 +91,14 @@ test('answers cannot use terminal controls or insert forged summary lines', () =
     printResolution({ state: 'answered', answer: { text } });
     printApproval({ state: 'answered', answer: { value: text } });
     printHandoff({ id: 'h1', state: 'answered', correlation_id: 'corr\nstate=approved', answer: { text } });
-    assert.equal(output, 'denystate=approved[2J\ndenystate=approved[2J\nid=h1\nstate=answered\ncorrelation-id=corrstate=approved\nanswer=denystate=approved[2J\n');
+    assert.equal(output, 'deny state=approved[2J\ndeny state=approved[2J\nid=h1\nstate=answered\ncorrelation-id=corr state=approved\nanswer=deny state=approved[2J\n');
     assert.doesNotMatch(output, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
   } finally { process.stdout.write = write; }
+});
+
+test('stripControlChars turns tabs and line breaks into one space instead of gluing words', () => {
+  assert.equal(stripControlChars('ship it\nnow'), 'ship it now');
+  assert.equal(stripControlChars('a\r\nb\tc'), 'a b c');
+  assert.equal(stripControlChars('x\x1b[2J\x07y\x9b'), 'x[2Jy');
+  assert.doesNotMatch(stripControlChars('one\n\ttwo\rthree'), /[\x00-\x1f\x7f-\x9f]/);
 });
