@@ -6325,3 +6325,37 @@ test('list sanitizes untrusted prompts and answers before terminal output', asyn
     assert.equal(stdout, 'q_1  answered   Ship?[2Jforged → denyapproved\n');
   } finally { server.close(); }
 });
+
+test('decision polling survives a rate limit and a temporary server failure', async () => {
+  const { pollDecision } = await import('../lib/http.js');
+  let attempts = 0;
+  const { server, baseUrl } = await questionServer({
+    'GET /decision': () => {
+      attempts += 1;
+      return attempts < 3
+        ? { status: attempts === 1 ? 429 : 503, body: { message: 'Try again' } }
+        : { status: 200, body: { state: 'answered' } };
+    },
+  });
+  try {
+    const result = await pollDecision(`${baseUrl}/decision`, 'tok');
+    assert.equal(result.json.state, 'answered');
+    assert.equal(attempts, 3);
+  } finally { server.close(); }
+});
+
+test('hook cancels its phone question before deferring a failed wait to a local prompt', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_x', state: 'pending' } }),
+    'GET /api/agent/questions/q_x/wait': () => ({ status: 503, body: { message: 'Unavailable' } }),
+    'POST /api/agent/questions/q_x/cancel': () => ({ status: 200, body: { state: 'cancelled' } }),
+  });
+  try {
+    const { status, stdout } = await runHook(['--api', baseUrl],
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' });
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.ok(received.some((request) => request.method === 'POST' && request.path === '/api/agent/questions/q_x/cancel'));
+  } finally { server.close(); }
+});
