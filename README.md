@@ -323,6 +323,8 @@ pingroom live <start|update|end|get> [options]
       --step <n>             Current step index (steps template)
       --metric <label:value> Repeatable, up to 3 (metrics template)
       --deadline-at <epoch>  Countdown target (countdown template)
+      --duration-seconds <n> Original countdown length; read on the first
+                             ping only (default: deadline minus now)
       --eta-at <epoch>       Live ETA (status/progress templates)
       --prompt <text>        The ask (decision template)
       --option <value:label> Repeatable, up to 4 (decision template)
