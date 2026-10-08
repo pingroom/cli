@@ -45,10 +45,11 @@ import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
   parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
   parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
-  parseReconnectArgs, parseRedeemArgs, parseSkillsArgs, parseUpdateArgs,
+  parseReconnectArgs, parseRedeemArgs, parseRunArgs, parseSkillsArgs, parseUpdateArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
 import { ping } from '../lib/commands/ping.js';
+import { run } from '../lib/commands/run.js';
 import { ask, cancel, list, watch } from '../lib/commands/ask.js';
 import { handoff, listHandoffs } from '../lib/commands/handoff.js';
 import { listen } from '../lib/commands/listen.js';
@@ -63,6 +64,7 @@ import { config, logout } from '../lib/commands/config.js';
 
 const COMMANDS = {
   ping: (rest) => ping(parseArgs(rest)),
+  run: (rest) => run(parseRunArgs(rest)),
   ask: (rest) => ask(parseQArgs(rest)),
   watch: (rest) => waitFrom(watch, rest),
   await: (rest) => waitFrom(watch, rest),
@@ -148,7 +150,7 @@ async function main() {
   const code = await handler(argv.slice(1));
   // After the command's own output, never before, and never in place of it:
   // the notice is advisory and must not lead. It cannot alter `code`.
-  if (command !== 'update') await maybeNotifyUpdate(VERSION);
+  if (command !== 'update' && command !== 'run') await maybeNotifyUpdate(VERSION);
   return exitAfterOutput(code);
 }
 

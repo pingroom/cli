@@ -27,6 +27,7 @@ pingroom ping -m "Deploy succeeded ✅"
 - [Install and first run](#install-and-first-run)
 - [Command guide](#command-guide)
 - [Ping options, files, links, and locations](#usage)
+- [Get notified when a command finishes](#command-completion)
 - [Questions](#ask-a-human-questions) · [Handoffs](#handoffs-agent--human)
 - [Live Activities](#live-activities-pingroom-live) · [Hearing replies](#hearing-replies)
 - [Rooms, webhooks, and quick actions](#managing-rooms-webhooks-and-quick-actions)
@@ -124,6 +125,7 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Task | Commands | Details |
 |---|---|---|
 | Send a ping, file, link, or location | `ping` | [Options and examples](#usage) |
+| Get notified when a job finishes | `run` | [Command completion](#command-completion) |
 | Ask and wait for a decision | `ask`, `approval`, `watch`, `list`, `cancel` | [Questions](#ask-a-human-questions) |
 | Reach your human directly | `handoff`, `handoffs` | [Handoffs](#handoffs-agent--human) |
 | Show live progress | `live start`, `update`, `end`, `get` | [Live Activities](#live-activities-pingroom-live) |
@@ -134,6 +136,66 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Maintain the CLI | `update`, `redeem` | [Updates](#update-the-cli) · [Gift codes](#redeem-a-gift-or-promotional-code) |
 
 Run `pingroom --help` or `pingroom <command> --help` for the full reference.
+
+## Command completion
+
+`pingroom run` runs a command and sends a completion ping with its outcome and
+elapsed time. Use it for a build, test suite, export, or other job you want to
+leave running while you step away.
+
+**Available from source; not included in npm version 0.12.0.** Requires Node.js 20
+or newer. The example below runs a one-second job without a PingRoom account.
+
+**`--preview` executes the command.** It skips notification delivery and prints
+the ping preview to stderr.
+
+```bash
+git clone https://github.com/pingroom/cli.git
+cd cli
+npm ci
+node bin/pingroom.js run --preview --name "Demo build" -- node -e "setTimeout(() => console.log('Build complete'), 1000)"
+```
+
+The wrapper does not read your PingRoom credentials or contact the network in
+preview mode; the command you run retains its normal access and behavior.
+
+After connecting with `node bin/pingroom.js`, run a real job:
+
+```bash
+node bin/pingroom.js run --name "Test suite" -- npm test
+```
+
+You can also use your existing `PINGROOM_WEBHOOK_URL`, or an agent token and room
+from `PINGROOM_TOKEN` and `PINGROOM_ROOM`. Run `node bin/pingroom.js run --help`
+for destination options.
+
+The literal `--` separates PingRoom options from the executable and its
+arguments. Everything after it belongs to the command, including flags such as
+`--help`. Standard input, output, and error stay attached to your terminal;
+PingRoom's own status messages go to stderr.
+
+The ping includes the executable's basename by default. `--name` supplies your
+own label, up to 40 characters. Arguments, working directory, and command output
+are not included in the ping. Choose a label you are comfortable sharing with
+the destination room.
+
+The wrapper preserves the command's exit code even if notification delivery fails.
+A delivery warning means the job's result is known but the ping was not
+confirmed. The command is never retried. Missing executables return `127`;
+commands terminated by a signal return `128 + signal number`. Other launch
+failures return `126`. Notification delivery times out after 10 seconds by
+default; `--notify-timeout <seconds>` accepts an integer from 1 to 60.
+
+Commands run directly, without an implicit shell. To use shell built-ins or a
+pipeline, invoke your shell explicitly. On Windows, `.cmd` and `.bat` scripts
+(including the usual `npm` shim) need an explicit command interpreter; a direct
+executable such as `node` works without one. This wrapper is not a daemon or a
+process supervisor: signal forwarding targets the direct child, not its
+descendants. On macOS and Linux, when a standard stream is attached to a
+terminal, the wrapper lets the foreground process group receive Ctrl+C directly.
+For programmatic cancellation in that setting, send `SIGTERM` to the wrapper or
+signal the process group, rather than sending `SIGINT` only to the wrapper.
+Jobs with all three streams redirected are treated as noninteractive.
 
 ## Usage
 
