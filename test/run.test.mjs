@@ -323,3 +323,23 @@ test('delivery clears its deadline and signal handlers when used without the CLI
   assert.deepEqual(after, before);
   assert.equal(server.received.length, 1);
 });
+
+test('a failed signal forward after launch is not reported as a launch failure', { skip: process.platform === 'win32' }, async (t) => {
+  // ChildProcess.kill() emits 'error' rather than throwing for EPERM. The child
+  // is still running, so its real exit must settle the outcome.
+  const script = `
+    const { ChildProcess } = await import('node:child_process');
+    ChildProcess.prototype.kill = function () {
+      this.emit('error', Object.assign(new Error('kill EPERM'), { code: 'EPERM' }));
+      return false;
+    };
+    const { run } = await import(${JSON.stringify(RUN)});
+    setTimeout(() => process.emit('SIGTERM', 'SIGTERM'), 100);
+    const code = await run({ preview: true, _: [process.execPath, '-e', 'setTimeout(() => process.exit(3), 400)'] });
+    process.stdout.write(JSON.stringify({ code }));
+  `;
+  const result = await execute(['--preview', '--', NODE, '--input-type=module', '-e', script], environment(t));
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { code: 3 });
+  assert.doesNotMatch(result.stderr, /could not start/);
+});
