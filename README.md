@@ -171,8 +171,8 @@ for destination options.
 
 The literal `--` separates PingRoom options from the executable and its
 arguments. Everything after it belongs to the command, including flags such as
-`--help`. Standard input, output, and error stay attached to your terminal;
-PingRoom's own status messages go to stderr.
+`--help`. The command inherits standard input, output, and error, including any
+redirections; PingRoom's own status messages go to stderr.
 
 The ping includes the executable's basename by default. `--name` supplies your
 own label, up to 40 characters. Arguments, working directory, and command output
@@ -191,11 +191,13 @@ pipeline, invoke your shell explicitly. On Windows, `.cmd` and `.bat` scripts
 (including the usual `npm` shim) need an explicit command interpreter; a direct
 executable such as `node` works without one. This wrapper is not a daemon or a
 process supervisor: signal forwarding targets the direct child, not its
-descendants. On macOS and Linux, when a standard stream is attached to a
-terminal, the wrapper lets the foreground process group receive Ctrl+C directly.
+descendants. On macOS and Linux, when the wrapper has a controlling terminal or
+a standard stream attached to a terminal, it lets the foreground process group
+receive Ctrl+C directly. This also works for foreground jobs started from an
+interactive shell, even when all three streams are redirected.
 For programmatic cancellation in that setting, send `SIGTERM` to the wrapper or
 signal the process group, rather than sending `SIGINT` only to the wrapper.
-Jobs with all three streams redirected are treated as noninteractive.
+Without a terminal, the wrapper forwards `SIGINT` to the direct child.
 
 ## Usage
 

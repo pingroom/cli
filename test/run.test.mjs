@@ -264,6 +264,9 @@ test('interrupting stalled delivery preserves the finished command status', { sk
 test('signals forward to the direct child and preserve conventional signal status', { skip: process.platform === 'win32' }, async (t) => {
   for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
     const result = await execute(['--preview', '--', NODE, '-e', 'process.stdout.write("ready\\n"); setInterval(() => {}, 1000);'], environment(t), {
+      // The test runner may itself have a controlling terminal even though
+      // the wrapper's stdio uses pipes. Model a daemon with its own session.
+      detached: true,
       onChild(child) { child.stdout.once('data', () => child.kill(signal)); },
     });
     assert.equal(result.code, code);
