@@ -543,6 +543,7 @@ test('exit 0: ping -h prints the ping-focused help, not the full reference', () 
   assert.match(stdout, /^ping options:/);
   assert.match(stdout, /-m, --message <text>/);
   assert.match(stdout, /--location <lat,lng>/);
+  assert.match(stdout, /--item <text>/);
   assert.match(stdout, /Shared:/);
   assert.doesNotMatch(stdout, /pingroom — send a ping/);
   assert.doesNotMatch(stdout, /ask options/);
@@ -956,6 +957,49 @@ test('exit 0: webhook location flags replace raw data.location and preserve sibl
     }]);
   } finally {
     server.close();
+  }
+});
+
+test('exit 0: --item builds data.checklist in order and replaces a raw data.checklist', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+  });
+  try {
+    const { status, stderr } = await runAsync([
+      'ping', '-w', `${baseUrl}/hook`, '-m', 'Groceries',
+      '-d', '{"event":"shop","checklist":{"items":[{"text":"stale"}]}}',
+      '--item', ' Milk ', '--item', '🥚'.repeat(80),
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(received, [{
+      message: 'Groceries',
+      data: {
+        event: 'shop',
+        checklist: { items: [{ text: 'Milk' }, { text: '🥚'.repeat(80) }] },
+      },
+    }]);
+  } finally {
+    server.close();
+  }
+});
+
+test('exit 2: --item rejects blank, overlong, and more than 25 items', () => {
+  const cases = [
+    [['--item', '   '], /--item must not be empty/],
+    [['--item', '🥚'.repeat(81)], /--item must be at most 80 characters/],
+    [Array.from({ length: 26 }, (_, i) => ['--item', `x${i}`]).flat(), /at most 25 times/],
+  ];
+  for (const [flags, pattern] of cases) {
+    const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', ...flags]);
+    assert.equal(status, 2, stderr);
+    assert.match(stderr, pattern);
   }
 });
 

@@ -213,6 +213,7 @@ pingroom ping [options]
       --location <lat,lng>  Attach a map location (latitude,longitude)
       --location-label <t>  Location label (<= 100 chars; requires --location)
       --location-address <t> Address (<= 255 chars; requires --location)
+      --item <text>      Add a checklist item (<= 80 chars); repeat for up to 25
       --require-ack      Keep the ping open until an eligible recipient acknowledges it
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
@@ -245,6 +246,20 @@ the point or open it in Waze, Google Maps, Apple Maps, or another installed map
 app. These flags work with agent-token and incoming-webhook sends. When combined
 with `--data`, the explicit flags replace only `data.location`; sibling keys are
 preserved.
+
+To send a checklist, repeat `--item` once per entry (up to 25, each at most 80
+Unicode characters). The items ride in the reserved `data.checklist` object and
+keep their order:
+
+```bash
+pingroom ping --room ab12cd -m "Groceries" \
+  --item "Milk" --item "Eggs" --item "Bread"
+```
+
+The room ticks the list together: a checked item is checked for everyone, it
+cannot be unchecked, and the first tick on an item alerts the other recipients.
+Like the location flags, `--item` works with agent-token and incoming-webhook
+sends and replaces only `data.checklist` when combined with `--data`.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
 acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
