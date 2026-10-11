@@ -995,6 +995,9 @@ test('exit 2: --item rejects blank, overlong, and more than 25 items', () => {
     [['--item', '   '], /--item must not be empty/],
     [['--item', '🥚'.repeat(81)], /--item must be at most 80 characters/],
     [Array.from({ length: 26 }, (_, i) => ['--item', `x${i}`]).flat(), /at most 25 times/],
+    // 25 x 80 non-Latin characters is ~4 KB of UTF-8 but ~12 KB under PHP's
+    // escaped json_encode, which is what the server's 8 KB cap measures.
+    [Array.from({ length: 25 }, () => ['--item', 'ش'.repeat(80)]).flat(), /at most 8 KB/],
   ];
   for (const [flags, pattern] of cases) {
     const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', ...flags]);
