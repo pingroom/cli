@@ -143,7 +143,7 @@ Run `pingroom --help` or `pingroom <command> --help` for the full reference.
 elapsed time. Use it for a build, test suite, export, or other job you want to
 leave running while you step away.
 
-**Available from source; not included in npm version 0.12.0.** Requires Node.js 20
+Requires CLI 0.13.0 or newer and Node.js 20
 or newer. The example below runs a one-second job without a PingRoom account.
 
 **`--preview` executes the command.** It skips notification delivery and prints
