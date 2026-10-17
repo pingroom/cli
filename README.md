@@ -352,8 +352,11 @@ Question; reusing it with a changed request returns `409 idempotency_conflict`.
 `--poll` asks the whole room for a vote instead of taking the first tap
 (`resolution_policy: "all"`). Everyone in the room when you ask, except your
 connected account, gets one vote, and votes are final. The poll closes as soon
-as everyone has voted, or at its `--ttl` if at least one person did; with no
-votes it expires (exit `3`).
+as nobody who can still vote owes a vote, or at its `--ttl` if at least one
+person did; with no votes it expires (exit `3`). Someone who left the room, was
+removed, deleted their account, or is now barred by a block stops holding it
+open; the server checks on every vote and once a minute, so such a poll closes
+within about a minute. A poll nobody voted in still waits for its `--ttl`.
 
 ```bash
 # Blocks until the poll closes. stdout: the winning value. stderr: the tally.
@@ -370,7 +373,15 @@ WINNER=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
 - A poll takes options only: `--poll` with `--scope direct`, `--target`,
   `--text-input` or `--text-max` is a usage error (exit `2`).
 - If nobody else is in the room, the server asks your connected account
-  directly instead, and the CLI says so on stderr.
+  directly instead, and the CLI says so on stderr (`pingroom: the server asked
+  this as a direct, first-answer question (nobody else in the room to poll)`).
+  A retry with the same `--idempotency-key` but without `--poll` replays that
+  question; anywhere else, reusing a key with and without `--poll` is
+  `409 idempotency_conflict`.
+- A poll nobody in the room could vote in (every member besides your connected
+  account is barred by a block) fails with `ask failed: …` (exit `1`).
+- A closed poll's winner (`answer`) never changes, but its `results` counts
+  are read live and can drop later if a voter deletes their account.
 - `pingroom list` marks polls with `[poll 3/4 voted]`.
 
 ## Handoffs (agent → human)
@@ -662,7 +673,7 @@ path, `outputs.answer` is never set, and any job gated on it silently proceeds.
 
 `scope` was added in **v0.7.5**, and without it every `ask` goes out as a direct
 question to the connecting account — the step still succeeds, so an Action meant
-to poll the room silently polls one person instead.
+to ask the whole room silently asks one person instead.
 
 `urgent` shipped in the **0.7.4 npm package**, but no `v0.7.4` Action tag was
 ever cut, so **v0.7.5 is the first tag that carries it**. It has the same failure

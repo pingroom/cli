@@ -1481,7 +1481,7 @@ test('ask --poll says so when a room with nobody else falls back to a direct que
     ]);
     assert.equal(status, 0);
     assert.equal(stdout.trim(), 'q_solo');
-    assert.match(stderr, /nobody else is in this room to poll/);
+    assert.match(stderr, /^pingroom: the server asked this as a direct, first-answer question \(nobody else in the room to poll\)$/m);
   } finally {
     server.close();
   }
