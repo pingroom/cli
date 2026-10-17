@@ -327,6 +327,10 @@ fi
 pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --scope room --wait \
   -p 'Which environment?' -o prod:Production -o staging:Staging -o cancel:Cancel
 
+# A poll: everyone in the room votes once; the winning value prints:
+pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
+  -p 'Lunch?' -o pizza:Pizza -o tacos:Tacos
+
 # Fire-and-forget (prints the question id), then watch it later:
 ID=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd -p 'Merge PR #42?' --ttl 1800)
 pingroom watch --token "$PINGROOM_TOKEN" "$ID"
@@ -342,6 +346,32 @@ answer (first tap wins); the default `direct` asks your bound user.
 `--idempotency-key <key>` sends a printable 1–255 character `Idempotency-Key`
 header. Retrying the same key with the same request returns the original
 Question; reusing it with a changed request returns `409 idempotency_conflict`.
+
+### Polls
+
+`--poll` asks the whole room for a vote instead of taking the first tap
+(`resolution_policy: "all"`). Everyone in the room when you ask, except your
+connected account, gets one vote, and votes are final. The poll closes as soon
+as everyone has voted, or at its `--ttl` if at least one person did; with no
+votes it expires (exit `3`).
+
+```bash
+# Blocks until the poll closes. stdout: the winning value. stderr: the tally.
+WINNER=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
+  -p 'Lunch?' -o pizza:Pizza -o tacos:Tacos --ttl 1800)
+# stderr while waiting:  pingroom: poll: pizza 1 · tacos 0 · 1 of 4 voted
+# stderr at the end:     pingroom: poll closed: pizza 3 · tacos 1 · 4 of 4 voted
+```
+
+- A tie exits `0` (the poll was answered) with nothing on stdout and
+  `pingroom: poll tied: …` on stderr, so `[ "$WINNER" = pizza ]` is false.
+- `--json` prints the whole Question instead, including `results`
+  (`audience_count`, `response_count`, a `count` per option, and the votes).
+- A poll takes options only: `--poll` with `--scope direct`, `--target`,
+  `--text-input` or `--text-max` is a usage error (exit `2`).
+- If nobody else is in the room, the server asks your connected account
+  directly instead, and the CLI says so on stderr.
+- `pingroom list` marks polls with `[poll 3/4 voted]`.
 
 ## Handoffs (agent → human)
 

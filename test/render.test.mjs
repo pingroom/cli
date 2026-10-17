@@ -11,7 +11,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildMetrics, buildOptions, canonicalTemplate, normalizeAccent, printResolution, printApproval, printHandoff,
+  buildMetrics, buildOptions, canonicalTemplate, formatPollProgress, formatPollTally, normalizeAccent,
+  printResolution, printApproval, printHandoff,
 } from '../lib/render.js';
 import { stripControlChars } from '../lib/util.js';
 
@@ -101,4 +102,45 @@ test('stripControlChars turns tabs and line breaks into one space instead of glu
   assert.equal(stripControlChars('a\r\nb\tc'), 'a b c');
   assert.equal(stripControlChars('x\x1b[2J\x07y\x9b'), 'x[2Jy');
   assert.doesNotMatch(stripControlChars('one\n\ttwo\rthree'), /[\x00-\x1f\x7f-\x9f]/);
+});
+
+test('formatPollTally lists every option in order and cannot be forged by an option value', () => {
+  const results = {
+    audience_count: 5,
+    response_count: 4,
+    options: [{ value: 'pizza', count: 3 }, { value: 'tacos\nstate=approved', count: 1 }, { value: 'sushi', count: 0 }],
+  };
+  assert.equal(formatPollTally(results), 'pizza 3 · tacos state=approved 1 · sushi 0 · 4 of 5 voted');
+  assert.equal(formatPollTally(null), '');
+  assert.equal(formatPollTally({ audience_count: 2 }), '');
+});
+
+test('formatPollProgress marks polls only', () => {
+  assert.equal(formatPollProgress({ resolution_policy: 'all', results: { audience_count: 5, response_count: 2, options: [] } }), '  [poll 2/5 voted]');
+  assert.equal(formatPollProgress({ resolution_policy: 'first', results: null }), '');
+  assert.equal(formatPollProgress({ resolution_policy: 'all', results: null }), '');
+});
+
+test('a closed poll prints its winner to stdout and the tally to stderr; a tie prints no winner', () => {
+  const write = process.stdout.write;
+  const writeErr = process.stderr.write;
+  let out = '';
+  let err = '';
+  process.stdout.write = (chunk) => { out += chunk; return true; };
+  process.stderr.write = (chunk) => { err += chunk; return true; };
+  try {
+    const results = { audience_count: 3, response_count: 3, options: [{ value: 'a', count: 2 }, { value: 'b', count: 1 }] };
+    printResolution({ state: 'answered', resolution_policy: 'all', answer: { value: 'a', text: null }, results });
+    printResolution({ state: 'answered', resolution_policy: 'all', answer: null, results: { ...results, options: [{ value: 'a', count: 1 }, { value: 'b', count: 1 }], response_count: 2 } });
+    printResolution({ state: 'cancelled', resolution_policy: 'all', answer: null, results });
+    assert.equal(out, 'a\n');
+    assert.equal(err,
+      'pingroom: poll closed: a 2 · b 1 · 3 of 3 voted\n'
+      + 'pingroom: poll tied: a 1 · b 1 · 2 of 3 voted\n'
+      + 'pingroom: question cancelled\n'
+      + 'pingroom: poll: a 2 · b 1 · 3 of 3 voted\n');
+  } finally {
+    process.stdout.write = write;
+    process.stderr.write = writeErr;
+  }
 });

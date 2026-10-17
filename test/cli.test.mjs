@@ -1359,6 +1359,151 @@ test('ask --wait blocks and prints the chosen value with exit 0', async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Polls — ask --poll (resolution_policy: all)
+// ---------------------------------------------------------------------------
+
+function pollResults(counts, audience) {
+  const options = Object.entries(counts).map(([value, count]) => ({ value, label: value, count }));
+  const voted = options.reduce((sum, o) => sum + o.count, 0);
+  return { audience_count: audience, response_count: voted, options, responses: [], viewer: null };
+}
+
+test('ask --poll sends resolution_policy all and leaves the scope to the server', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_poll', state: 'pending', resolution_policy: 'all' } }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl,
+      '-p', 'Lunch?', '-o', 'pizza:Pizza', '-o', 'tacos:Tacos', '--poll',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.equal(stdout.trim(), 'q_poll');
+    assert.equal(stderr, '');
+    assert.deepEqual(JSON.parse(received[0].body), {
+      prompt: 'Lunch?',
+      options: [{ value: 'pizza', label: 'Pizza' }, { value: 'tacos', label: 'Tacos' }],
+      resolution_policy: 'all',
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('exit 2: --poll with a direct scope, a target, or a typed answer', () => {
+  const base = ['ask', '--token', 't', '--room', 'ab12cd', '-p', 'Lunch?', '--poll'];
+  for (const [extra, message] of [
+    [['--scope', 'direct'], /--poll asks the whole room/],
+    [['--target', '0190a2b4-0000-7000-8000-000000000001'], /--poll asks the whole room/],
+    [['--text-input', 'Other?'], /--poll counts option votes/],
+    [['--text-max', '20'], /--poll counts option votes/],
+  ]) {
+    const { status, stderr } = run([...base, ...extra]);
+    assert.equal(status, 2, extra.join(' '));
+    assert.match(stderr, message);
+  }
+});
+
+test('ask --poll --wait reports the tally on stderr and prints the winner', async () => {
+  let waits = 0;
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_p', state: 'pending', resolution_policy: 'all' } }),
+    'GET /api/agent/questions/q_p/wait': () => {
+      waits += 1;
+      if (waits <= 2) {
+        // Two holds time out with the same single vote: one progress line, not two.
+        return { status: 200, body: { id: 'q_p', state: 'pending', resolution_policy: 'all', answer: null, results: pollResults({ pizza: 1, tacos: 0 }, 3) } };
+      }
+      return { status: 200, body: {
+        id: 'q_p', state: 'answered', resolution_policy: 'all',
+        answer: { value: 'pizza', label: 'Pizza', text: null, responder: null, answered_at: '2026-10-17T10:00:00+00:00' },
+        results: pollResults({ pizza: 2, tacos: 1 }, 3),
+      } };
+    },
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--wait', '--poll',
+      '-p', 'Lunch?', '-o', 'pizza', '-o', 'tacos',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.equal(stdout, 'pizza\n');
+    assert.equal(stderr,
+      'pingroom: poll: pizza 1 · tacos 0 · 1 of 3 voted\n'
+      + 'pingroom: poll closed: pizza 2 · tacos 1 · 3 of 3 voted\n');
+  } finally {
+    server.close();
+  }
+});
+
+test('a tied poll exits 0 with nothing on stdout', async () => {
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions/q_t/wait': () => ({ status: 200, body: {
+      id: 'q_t', state: 'answered', resolution_policy: 'all', answer: null,
+      results: pollResults({ pizza: 1, tacos: 1 }, 2),
+    } }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync(['watch', '--token', 'tok', '--api', baseUrl, 'q_t']);
+    assert.equal(status, 0);
+    assert.equal(stdout, '');
+    assert.equal(stderr, 'pingroom: poll tied: pizza 1 · tacos 1 · 2 of 2 voted\n');
+  } finally {
+    server.close();
+  }
+});
+
+test('a poll nobody voted in exits 3 and still reports the tally', async () => {
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions/q_e/wait': () => ({ status: 200, body: {
+      id: 'q_e', state: 'expired', resolution_policy: 'all', answer: null,
+      results: pollResults({ pizza: 0, tacos: 0 }, 4),
+    } }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync(['watch', '--token', 'tok', '--api', baseUrl, 'q_e']);
+    assert.equal(status, 3);
+    assert.equal(stdout, '');
+    assert.equal(stderr, 'pingroom: question expired\npingroom: poll: pizza 0 · tacos 0 · 0 of 4 voted\n');
+  } finally {
+    server.close();
+  }
+});
+
+test('ask --poll says so when a room with nobody else falls back to a direct question', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_solo', state: 'pending', resolution_policy: 'first', responder_scope: 'direct' } }),
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync([
+      'ask', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-p', 'Lunch?', '--poll',
+    ]);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'q_solo');
+    assert.match(stderr, /nobody else is in this room to poll/);
+  } finally {
+    server.close();
+  }
+});
+
+test('list marks a poll with its vote count', async () => {
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions': () => ({ status: 200, body: { questions: [
+      { id: 'q_p', state: 'pending', prompt: 'Lunch?', resolution_policy: 'all', answer: null, results: pollResults({ pizza: 2, tacos: 1 }, 5) },
+      { id: 'q_f', state: 'pending', prompt: 'Deploy?', resolution_policy: 'first', answer: null, results: null },
+    ] } }),
+  });
+  try {
+    const { status, stdout } = await runAsync(['list', '--token', 'tok', '--api', baseUrl]);
+    assert.equal(status, 0);
+    assert.match(stdout, /q_p\s+pending\s+Lunch\?  \[poll 3\/5 voted\]\n/);
+    assert.match(stdout, /q_f\s+pending\s+Deploy\?\n/);
+  } finally {
+    server.close();
+  }
+});
+
 test('ask --wait --json prints the terminal response as JSON', async () => {
   const terminal = { id: 'q_json', state: 'answered', answer: { value: 'approve', label: 'Approve' } };
   const { server, baseUrl } = await questionServer({
