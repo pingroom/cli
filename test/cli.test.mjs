@@ -1313,6 +1313,17 @@ test('ask rejects unsafe Idempotency-Key values before creating a question', () 
   }
 });
 
+test('handoff applies the same Idempotency-Key rule as ask and approval', () => {
+  // A non-Latin-1 key used to reach fetch() and fail as a "network error"
+  // (ByteString), so the advertised retry-with-the-same-key failed every time.
+  for (const key of ['', 'contains space', 'line\nbreak', 'ключ', 'x'.repeat(256)]) {
+    const { status, stderr } = run(['handoff', '--token', 'tok', '-m', 'Ship?', '--idempotency-key', key]);
+    assert.equal(status, 2, key);
+    assert.match(stderr, /--idempotency-key must be 1–255 printable ASCII/);
+    assert.doesNotMatch(stderr, /network error/);
+  }
+});
+
 test('ask surfaces an idempotency conflict and never waits', async () => {
   const { server, baseUrl, received } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({
