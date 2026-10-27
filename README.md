@@ -349,6 +349,14 @@ pingroom list   --token "$PINGROOM_TOKEN" --state pending
 pingroom cancel --token "$PINGROOM_TOKEN" "$ID"
 ```
 
+If PingRoom becomes unreachable while `ask --wait`, `approval --wait`,
+`handoff --wait` or `watch` is blocking, the CLI retries network errors, 5xx and
+429 with backoff, prints one `pingroom: PingRoom unavailable since … retrying`
+line after three failures in a row, and exits `1` with `PingRoom unavailable
+since …; stopped waiting` once the outage outlasts the question's or handoff's
+expiry by 5 minutes (15 minutes of failures for a `watch` that has not read the
+expiry yet). It never exits `0` without an answer.
+
 Options are `value:label` pairs (repeat `-o` for 2–4). Omit them for the binary
 Approve/Deny default — two options is the lock-screen fast path. `--ttl` sets the
 expiry in seconds (default 1h; 30–86400). `--scope room` lets any eligible member
