@@ -10,13 +10,13 @@ inputs:
     description: 'Ping body (max 120 private / 160 public), or the Question/Handoff prompt (required; separate 500-char limit).'
     required: true
   webhook-url:
-    description: 'Room webhook URL. Best for CI — carries its own secret, no browser auth. Store it as a secret.'
+    description: 'Room webhook URL. Best for CI — carries its own secret, no browser auth. Store it as a secret. For a ping it takes precedence: when webhook-url is set, the ping goes to the webhook and `token` and `room` are not used for it. Handoff and ask always use `token`.'
     required: false
   token:
-    description: 'Agent access token (alternative to webhook-url; use with `room`). Required for handoffs.'
+    description: 'Agent access token. Required for handoffs and asks. For a ping, used with `room` only when webhook-url is empty; webhook-url wins when both are set.'
     required: false
   room:
-    description: 'Room invite code (used with `token`).'
+    description: 'Room invite code, used with `token`. Ignored for a ping when webhook-url is set (the webhook URL names its own room).'
     required: false
   title:
     description: 'Ping title (<= 40 chars).'
@@ -245,9 +245,13 @@ runs:
         [ -n "$PR_DATA" ]   && args+=(-d "$PR_DATA")
         [ -n "$PR_URL" ]    && args+=(--url "$PR_URL")
         [ -n "$PR_BUTTON_LABEL" ] && args+=(--button-label "$PR_BUTTON_LABEL")
-        # --room selects the agent-token path, so pass it only with a token:
-        # alongside webhook-url alone it was always ignored, and the CLI now
+        # Transport precedence: webhook-url wins whenever it is set, as it
+        # always has. From CLI 0.14.0 an explicit --room selects the agent-token
+        # path, so with webhook-url set the ping gets neither the token nor the
+        # room; a pin bump must not move a webhook workflow onto its token.
+        # Without webhook-url, --room goes only alongside a token: the CLI
         # refuses an explicit --room it has no token to deliver with.
+        [ -n "$PINGROOM_WEBHOOK_URL" ] && unset PINGROOM_TOKEN
         [ -n "$PR_ROOM" ] && [ -n "$PINGROOM_TOKEN" ] && args+=(--room "$PR_ROOM")
         [ "$PR_URGENT" = "true" ] && args+=(--urgent)
         [ "$PR_REQUIRE_ACK" = "true" ] && args+=(--require-ack)

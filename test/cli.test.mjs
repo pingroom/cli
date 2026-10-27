@@ -103,11 +103,16 @@ test('GitHub Action exposes ask inputs and outputs through the same output proto
   assert.equal(action.match(/exit \$code/g).length, 2);
 });
 
-test('GitHub Action passes --room to ping only alongside a token', () => {
+test('GitHub Action passes --room to ping only alongside a token, and never with webhook-url', () => {
   // An explicit --room selects the agent-token path, so webhook-url + room
-  // (no token) must keep pinging the webhook's room.
+  // (no token) must keep pinging the webhook's room, and webhook-url + token
+  // + room must too (the 0.13.0 precedence). Behaviour is covered by
+  // "the Action keeps webhook-url ahead of token and room" below.
   const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
-  assert.match(action, /\[ -n "\$PR_ROOM" \] && \[ -n "\$PINGROOM_TOKEN" \] && args\+=\(--room "\$PR_ROOM"\)/);
+  assert.match(action, /\[ -n "\$PINGROOM_WEBHOOK_URL" \] && unset PINGROOM_TOKEN\n\s*\[ -n "\$PR_ROOM" \] && \[ -n "\$PINGROOM_TOKEN" \] && args\+=\(--room "\$PR_ROOM"\)/);
+  // The input descriptions say so.
+  assert.match(action, /^  webhook-url:\n    description: '[^']*takes precedence/m);
+  assert.match(action, /^  token:\n    description: '[^']*webhook-url wins when both are set/m);
 });
 
 test('GitHub Action splits options on newlines first so a label may contain a comma', () => {
@@ -1367,7 +1372,7 @@ test('ask sends a bounded Idempotency-Key header without adding it to the body',
 });
 
 test('ask rejects unsafe Idempotency-Key values before creating a question', () => {
-  for (const key of ['', 'contains space', 'line\nbreak', 'x'.repeat(256)]) {
+  for (const key of ['', '   ', 'line\nbreak', 'tab\there', 'ключ', 'deploy-✅', 'café', 'x'.repeat(256)]) {
     const { status, stderr } = run([
       'ask', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--idempotency-key', key,
     ]);
@@ -1379,11 +1384,43 @@ test('ask rejects unsafe Idempotency-Key values before creating a question', () 
 test('handoff applies the same Idempotency-Key rule as ask and approval', () => {
   // A non-Latin-1 key used to reach fetch() and fail as a "network error"
   // (ByteString), so the advertised retry-with-the-same-key failed every time.
-  for (const key of ['', 'contains space', 'line\nbreak', 'ключ', 'x'.repeat(256)]) {
+  for (const key of ['', '   ', 'line\nbreak', 'ключ', 'deploy-✅', 'x'.repeat(256)]) {
     const { status, stderr } = run(['handoff', '--token', 'tok', '-m', 'Ship?', '--idempotency-key', key]);
     assert.equal(status, 2, key);
     assert.match(stderr, /--idempotency-key must be 1–255 printable ASCII/);
     assert.doesNotMatch(stderr, /network error/);
+  }
+});
+
+test('--idempotency-key takes what the server takes: interior spaces, ends trimmed', async () => {
+  // RequestIdempotency::keyFrom trims and accepts 1-255 characters, spaces
+  // included, and 0.13.0 sent any handoff key. A workflow keyed
+  // "deploy ${{ github.sha }}" must keep working across the pin bump.
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_s', state: 'pending' } }),
+    'POST /api/agent/handoffs': () => ({ status: 201, body: { id: 'h_s', state: 'open', delivery_state: 'enqueued' } }),
+    'POST /api/agent/rooms/ab12cd/actions/1/trigger': () => ({ body: { id: 'n1' } }),
+  });
+  try {
+    for (const argv of [
+      ['ask', '--room', 'ab12cd', '-p', 'Ship?'],
+      ['approval', '--room', 'ab12cd', '-p', 'Ship?'],
+      ['handoff', '-m', 'Ship?'],
+      ['actions', 'trigger', '1', '--room', 'ab12cd'],
+    ]) {
+      for (const [key, sent] of [
+        ['deploy 3f2c9e1', 'deploy 3f2c9e1'],
+        ['  deploy 3f2c9e1 \t', 'deploy 3f2c9e1'],
+        [`a ${'k'.repeat(253)}`, `a ${'k'.repeat(253)}`],
+        ['!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~', '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'],
+      ]) {
+        const { status, stderr } = await runAsync([...argv, '--token', 'tok', '--api', baseUrl, '--idempotency-key', key]);
+        assert.equal(status, 0, `${argv.join(' ')} ${JSON.stringify(key)}: ${stderr}`);
+        assert.equal(received.at(-1).idempotency, sent, `${argv.join(' ')} ${JSON.stringify(key)}`);
+      }
+    }
+  } finally {
+    server.close();
   }
 });
 
@@ -5723,7 +5760,7 @@ test('approval sends Idempotency-Key as a header, never in the body', async () =
   }
 
   const unsafe = run([
-    'approval', '-p', 'Ship?', '--idempotency-key', 'has space',
+    'approval', '-p', 'Ship?', '--idempotency-key', 'deploy-✅',
     '--token', 'x'.repeat(40), '--room', 'ABC123',
   ]);
   assert.equal(unsafe.status, 2);
@@ -6937,6 +6974,65 @@ test('naming both transports is a usage error, and --room without a token says w
   const { status, stderr } = run(['ping', '-m', 'hi', '--room', 'ab12cd'], { PINGROOM_WEBHOOK_URL: 'https://hooks.example/w' });
   assert.equal(status, 2);
   assert.match(stderr, /--room selects the agent-token path.*PINGROOM_WEBHOOK_URL is ignored/);
+});
+
+/**
+ * Run the Action's `run:` script under bash the way a composite step does
+ * (`bash --noprofile --norc -eo pipefail`), with the npx pin swapped for this
+ * tree's CLI. `env` carries the step's inputs.
+ */
+function runActionScript(env) {
+  const action = readAction();
+  const marker = '      run: |\n';
+  const script = action
+    .slice(action.indexOf(marker) + marker.length)
+    .split('\n')
+    .map((line) => (line.startsWith('        ') ? line.slice(8) : line))
+    .join('\n');
+  const pin = /^CLI="npx --yes @pingroom\/cli@\d+\.\d+\.\d+"$/m;
+  assert.match(script, pin, 'the Action must still invoke the pinned CLI through $CLI');
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-action-'));
+  const wrapper = join(dir, 'pingroom');
+  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  const step = join(dir, 'step.sh');
+  writeFileSync(step, script.replace(pin, `CLI="${wrapper}"`));
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', ['--noprofile', '--norc', '-eo', 'pipefail', step], {
+      env: { ...baseEnv(), GITHUB_OUTPUT: join(dir, 'github-output'), ...env },
+    });
+    let stderr = '';
+    child.stderr.on('data', (c) => (stderr += c));
+    child.on('error', reject);
+    child.on('close', (status) => {
+      rmSync(dir, { recursive: true, force: true });
+      resolve({ status, stderr });
+    });
+  });
+}
+
+test('the Action keeps webhook-url ahead of token and room for a ping, so a pin bump changes no transport', async () => {
+  // 0.13.0 pinged the webhook whenever one was set. From 0.14.0 an explicit
+  // --room selects the token path, so the Action must hand the ping neither.
+  const { server, baseUrl, received } = await transportServer();
+  const webhook = `${baseUrl}/webhooks/room/HOOKSECRET`;
+  try {
+    for (const [inputs, path, auth] of [
+      [{ PINGROOM_WEBHOOK_URL: webhook, PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' }, '/webhooks/room/HOOKSECRET', undefined],
+      [{ PINGROOM_WEBHOOK_URL: webhook, PR_ROOM: 'ab12cd' }, '/webhooks/room/HOOKSECRET', undefined],
+      [{ PINGROOM_WEBHOOK_URL: webhook, PINGROOM_TOKEN: 'tok' }, '/webhooks/room/HOOKSECRET', undefined],
+      [{ PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' }, '/api/agent/rooms/ab12cd/notifications', 'Bearer tok'],
+    ]) {
+      const before = received.length;
+      const { status, stderr } = await runActionScript({ PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', ...inputs });
+      const label = Object.keys(inputs).join(' + ');
+      assert.equal(status, 0, `${label}: ${stderr}`);
+      assert.deepEqual(received.slice(before).map((r) => r.path), [path], label);
+      assert.equal(received.at(-1).auth, auth, label);
+    }
+  } finally {
+    server.close();
+  }
 });
 
 // --- watch on an approval is a gate ------------------------------------------

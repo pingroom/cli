@@ -361,9 +361,12 @@ Options are `value:label` pairs (repeat `-o` for 2–4). Omit them for the binar
 Approve/Deny default — two options is the lock-screen fast path. `--ttl` sets the
 expiry in seconds (default 1h; 30–86400). `--scope room` lets any eligible member
 answer (first tap wins); the default `direct` asks your bound user.
-`--idempotency-key <key>` sends a printable 1–255 character `Idempotency-Key`
-header. Retrying the same key with the same request returns the original
+`--idempotency-key <key>` sends an `Idempotency-Key` header of 1–255 printable
+ASCII characters. Spaces are allowed, and surrounding whitespace is trimmed as
+the server does; anything else, such as an emoji or Cyrillic, exits `2` before
+sending. Retrying the same key with the same request returns the original
 Question; reusing it with a changed request returns `409 idempotency_conflict`.
+`approval`, `handoff` and `actions trigger` take the same rule.
 
 ### Polls
 
@@ -708,6 +711,15 @@ so a workflow that used it to break through Focus needs `urgent: true`.
 
 Everything else on this page (ping, `require-ack`, and the whole `handoff`
 family) works on `@v0`.
+
+A ping goes to `webhook-url` whenever it is set, even when `token` and `room`
+are set too: the token and room are then not used for the ping. Without
+`webhook-url`, a ping needs `token` and `room`. `handoff` and `ask` always use
+`token`. This matches every earlier release, so moving the pin does not move a
+webhook workflow onto its token.
+
+`idempotency-key` follows the CLI rule: 1–255 printable ASCII characters,
+spaces allowed, so `'deploy ${{ github.sha }}'` works.
 
 `options` is one `value:label` per line. Trailing newlines are ignored first, so
 a value that is a single line after trimming — including a one-line `options: |`
