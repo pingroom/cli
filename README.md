@@ -603,7 +603,7 @@ pingroom approval -p "Ship v2 to production?" --wait   # exit 0 approved · 4 de
 ID=$(pingroom approval -p "Ship v2 to production?")     # or create it now, then resume:
 pingroom watch "$ID" && ./deploy.sh                     # same exit codes as --wait
 
-pingroom attachment get <id> --out report.md
+pingroom attachment get <id> --out report.md            # stdout when piped; --out - to force it onto a terminal
 pingroom attachment delete <id>
 ```
 

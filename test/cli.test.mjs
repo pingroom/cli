@@ -7130,3 +7130,144 @@ test('a network failure is named without the URL or the token', async () => {
     process.exitCode = exitCode;
   }
 });
+
+// --- server and member text cannot drive the terminal ------------------------
+
+test('list commands strip terminal controls from room, webhook, action and handoff text', async () => {
+  const evil = '\x1b]0;pwned\x07Ops\x1b[2J';
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/rooms': () => ({ status: 200, body: { rooms: [{ invite_code: 'AB12\x1b[1m', name: evil, is_public: true }] } }),
+    'GET /api/agent/room-icons': () => ({ status: 200, body: { categories: [{ label: evil, icons: ['bell\x1b[31m', 'globe'] }] } }),
+    'POST /api/agent/rooms/join': () => ({ status: 200, body: { name: evil } }),
+    'GET /api/agent/rooms/ab12cd/webhooks': () => ({ status: 200, body: { webhooks: [{ id: 'w1\x1b[2K', name: evil }] } }),
+    'POST /api/agent/rooms/ab12cd/webhooks': () => ({ status: 201, body: { id: 'w2', webhook_url: 'https://api.example/w/\x1b[8msecret' } }),
+    'GET /api/agent/rooms/ab12cd/actions': () => ({ status: 200, body: { actions: [{ action_number: 1, icon: '🚀\x1b[5m', label: evil, input_type: 'file\x07' }] } }),
+    'GET /api/agent/handoffs': () => ({ status: 200, body: { handoffs: [{ id: 'h1', kind: 'question', state: 'answered\x1b[0m', prompt: evil, answer: { value: 'yes\x9b2J' } }] } }),
+    'GET /api/agent/rooms/ab12cd/live/deploy-1': () => ({ status: 200, body: { state: 'running\x1b[2J' } }),
+  });
+  try {
+    const common = ['--token', 'tok', '--api', baseUrl];
+    for (const argv of [
+      ['rooms', 'list'], ['rooms', 'icons'], ['rooms', 'join', 'ab12cd'],
+      ['webhooks', 'list', '--room', 'ab12cd'], ['webhooks', 'create', '--room', 'ab12cd', '--name', 'CI'],
+      ['actions', 'list', '--room', 'ab12cd'], ['handoffs', '--state', 'all'],
+      ['live', 'get', '-c', 'deploy-1', '--room', 'ab12cd'],
+    ]) {
+      const { status, stdout, stderr } = await runAsync([...argv, ...common]);
+      assert.equal(status, 0, `${argv.join(' ')}: ${stderr}`);
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(stdout, /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/, `${argv.join(' ')} printed a control character`);
+    }
+    // --json is the raw response, unchanged.
+    const raw = await runAsync(['rooms', 'list', '--json', ...common]);
+    assert.equal(JSON.parse(raw.stdout).rooms[0].name, evil);
+  } finally {
+    server.close();
+  }
+});
+
+test('pairing and email-claim errors print the server text through apiDetail', async () => {
+  const hostile = { message: 'Nope\x1b]0;pwned\x07\x1b[2J', code: 'nope' };
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/auth': () => ({ status: 200, body: { credential: 'pre_claim_jwt', credential_type: 'pre_claim', expires_in: 900 } }),
+    'POST /api/agent/auth/pair/start': () => ({ status: 422, body: hostile }),
+    'POST /api/agent/auth/claim/start': () => ({ status: 422, body: hostile }),
+  });
+  const homes = [newHome(), newHome()];
+  try {
+    const paired = await runAsync(['pair', '--api', baseUrl], { PINGROOM_HOME: homes[0] });
+    assert.equal(paired.status, 1);
+    assert.match(paired.stderr, /could not start pairing: Nope\]0;pwned\[2J/);
+
+    const emailed = await runAsync(
+      ['--api', baseUrl],
+      { PINGROOM_HOME: homes[1], PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test' },
+      { stdin: '2\nme@example.com\n' },
+    );
+    assert.equal(emailed.status, 1);
+    assert.match(emailed.stderr, /could not send the email: Nope/);
+    for (const output of [paired.stdout, paired.stderr, emailed.stdout, emailed.stderr]) {
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(output, /\x1b|\x07/);
+    }
+  } finally {
+    server.close();
+    for (const home of homes) rmSync(home, { recursive: true, force: true });
+  }
+});
+
+const PTY_SKIP = process.platform === 'win32' ? 'POSIX terminals are unavailable on Windows'
+  : (() => {
+    const probe = spawnSync('python3', ['-c', 'import pty'], { timeout: 5000 });
+    return probe.error || probe.status !== 0 ? 'Python 3 with stdlib pty is unavailable' : false;
+  })();
+
+/** Run the CLI with stdout on a pseudo-terminal; returns the exit code, stderr and terminal output. */
+function runWithTtyStdout(args, env = {}) {
+  const script = `
+import json, os, pty, select, subprocess, sys
+master, slave = pty.openpty()
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=slave, stderr=subprocess.PIPE)
+os.close(slave)
+out = b''
+while True:
+    r, _, _ = select.select([master], [], [], 0.2)
+    if r:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    elif p.poll() is not None:
+        break
+err = p.stderr.read()
+print(json.dumps({"code": p.wait(), "stderr": err.decode(), "tty": out.decode("latin-1")}))
+`;
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-c', script, process.execPath, CLI, ...args], { env: { ...baseEnv(), ...env } });
+    let out = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.on('error', reject);
+    child.on('close', () => resolve(JSON.parse(out)));
+  });
+}
+
+test('attachment get refuses to dump bytes into a terminal unless --out - asks for it', { skip: PTY_SKIP }, async () => {
+  let downloads = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    downloads += 1;
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    res.end('PK\x03\x04payload');
+  });
+  try {
+    const refused = await runWithTtyStdout(['attachment', 'get', 'att-1', '--token', 'tok', '--api', baseUrl]);
+    assert.equal(refused.code, 2, refused.stderr);
+    assert.match(refused.stderr, /refusing to write attachment bytes to a terminal; use --out <path>, or --out -/);
+    assert.equal(refused.tty, '');
+    assert.equal(downloads, 0, 'refused before the download');
+
+    const forced = await runWithTtyStdout(['attachment', 'get', 'att-1', '--out', '-', '--token', 'tok', '--api', baseUrl]);
+    assert.equal(forced.code, 0, forced.stderr);
+    assert.match(forced.tty, /payload/);
+  } finally {
+    server.close();
+  }
+});
+
+test('attachment get still streams bytes into a pipe, and --out - means stdout', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    res.end('binary-bytes');
+  });
+  try {
+    for (const extra of [[], ['--out', '-']]) {
+      const { status, stdout } = await runAsync(['attachment', 'get', 'att-1', ...extra, '--token', 'tok', '--api', baseUrl]);
+      assert.equal(status, 0);
+      assert.equal(stdout, 'binary-bytes');
+    }
+  } finally {
+    server.close();
+  }
+});
