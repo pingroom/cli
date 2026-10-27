@@ -27,7 +27,9 @@ test('ping prints a web link after acceptance and preserves JSON and error outpu
   const moduleUrl = new URL('../lib/commands/ping.js', import.meta.url).href;
   const cases = [
     { receipt: { id }, args: {}, status: 201, output: `ping sent ✅\nView on web: ${expected}\n` },
-    { receipt: { notification_id: id }, args: { webhook: 'https://api.pingroom.io/webhooks/room/secret' }, status: 200, output: `ping sent ✅\nView on web: ${expected}\n` },
+    // A webhook names its own room, so this case drops the token and room:
+    // --webhook alongside either is a usage error.
+    { receipt: { notification_id: id }, args: { webhook: 'https://api.pingroom.io/webhooks/room/secret', token: undefined, room: undefined }, status: 200, output: `ping sent ✅\nView on web: ${expected}\n` },
     { receipt: { id }, args: { json: true }, status: 201, output: `${JSON.stringify({ id })}\n` },
     { receipt: { success: true }, args: {}, status: 200, output: 'ping sent ✅\n' },
     { receipt: { id, message: 'Denied' }, args: {}, status: 403, output: '', exit: 1 },

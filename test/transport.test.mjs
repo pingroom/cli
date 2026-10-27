@@ -54,13 +54,15 @@ for (const status of [307, 308]) {
     await assert.rejects(hookFetch('POST', `${source}/hook`, {
       body: { message: 'fixture-private-message' }, token: 'fixture-token',
     }));
+    // The webhook ping carries no --token: a webhook names its own room, and
+    // --webhook with --token is a usage error.
     for (const args of [
       ['ping', '--webhook', `${source}/hook`, '--message', 'fixture-private-message'],
-      ['rooms', 'join', 'ROOM123', '--password', 'fixture-password'],
-      ['ping', '--room', 'ROOM123', '--message', 'fixture-private-message', '--attach', attachment],
-      ['attachment', 'get', 'a1'],
+      ['rooms', 'join', 'ROOM123', '--password', 'fixture-password', '--token', 'fixture-token'],
+      ['ping', '--room', 'ROOM123', '--message', 'fixture-private-message', '--attach', attachment, '--token', 'fixture-token'],
+      ['attachment', 'get', 'a1', '--token', 'fixture-token'],
     ]) {
-      const result = await run([...args, '--api', source, '--token', 'fixture-token'], home);
+      const result = await run([...args, '--api', source], home);
       assert.equal(result.status, 1, result.stderr);
     }
     assert.equal(forwardedRequests, 0);
