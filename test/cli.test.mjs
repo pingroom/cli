@@ -6855,3 +6855,52 @@ test('naming both transports is a usage error, and --room without a token says w
   assert.equal(status, 2);
   assert.match(stderr, /--room selects the agent-token path.*PINGROOM_WEBHOOK_URL is ignored/);
 });
+
+// --- watch on an approval is a gate ------------------------------------------
+
+/** The approve/deny options as the server presents them on a question. */
+const APPROVE_DENY_WIRE = [
+  { value: 'approve', label: 'Approve', primary: true, destructive: false },
+  { value: 'deny', label: 'Deny', primary: false, destructive: true },
+];
+
+test('watch exits 4 when an approve/deny question is denied, 0 when approved', async () => {
+  for (const [value, code] of [['deny', 4], ['approve', 0]]) {
+    const { server, baseUrl } = await questionServer({
+      'GET /api/agent/questions/q_gate/wait': () => ({ status: 200, body: {
+        id: 'q_gate', state: 'answered', options: APPROVE_DENY_WIRE, answer: { value, label: value },
+      } }),
+    });
+    try {
+      for (const command of ['watch', 'await']) {
+        const { status, stdout } = await runAsync([command, '--token', 'tok', '--api', baseUrl, 'q_gate']);
+        assert.equal(status, code, `${command} on ${value}`);
+        assert.equal(stdout.trim(), value);
+      }
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('watch still exits 0 on any answer to a question that is not approve/deny', async () => {
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions/q_env/wait': () => ({ status: 200, body: {
+      id: 'q_env', state: 'answered',
+      options: [{ value: 'hold', label: 'Hold' }, { value: 'deny', label: 'Deny' }],
+      answer: { value: 'deny' },
+    } }),
+  });
+  try {
+    const { status, stdout } = await runAsync(['watch', '--token', 'tok', '--api', baseUrl, 'q_env']);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), 'deny');
+  } finally {
+    server.close();
+  }
+});
+
+test('watch and approval help say that watch resumes an approval as a gate', () => {
+  assert.match(run(['watch', '--help']).stdout, /gate: exit 0 only on approve, 4 on deny/);
+  assert.match(run(['approval', '--help']).stdout, /pingroom watch <id>\s+Resume a pending approval/);
+});

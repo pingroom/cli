@@ -54,7 +54,8 @@ pingroom ping -m "Deploy succeeded ✅"
 A sent ping means the server accepted it. `--require-ack` adds confirmation
 buttons and returns immediately; `--ack-mode all` keeps the ping open until
 every original eligible recipient confirms. Use `approval --wait` for a shell
-gate: it exits `0` only on approval. Attachments require Pro.
+gate: it exits `0` only on approval. `pingroom watch <id>` resumes an approval
+created without `--wait` with the same exit codes. Attachments require Pro.
 [End live streams](#live-activities-pingroom-live) when the work finishes.
 
 ## Agent skills
@@ -341,6 +342,8 @@ pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
 # Fire-and-forget (prints the question id), then watch it later:
 ID=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd -p 'Merge PR #42?' --ttl 1800)
 pingroom watch --token "$PINGROOM_TOKEN" "$ID"
+# This one has the default Approve/Deny options, so watch treats it as a gate:
+# exit 0 only on approve, 4 on deny. Any other question exits 0 on any answer.
 
 pingroom list   --token "$PINGROOM_TOKEN" --state pending
 pingroom cancel --token "$PINGROOM_TOKEN" "$ID"
@@ -589,6 +592,8 @@ pingroom rooms create -n "Meetup" --icon globe --color "#0391fe" --public --hand
   --location "25.2048,55.2708" --location-name "Dubai Mall"    # listed in nearby discovery
 
 pingroom approval -p "Ship v2 to production?" --wait   # exit 0 approved · 4 denied · 3 expired
+ID=$(pingroom approval -p "Ship v2 to production?")     # or create it now, then resume:
+pingroom watch "$ID" && ./deploy.sh                     # same exit codes as --wait
 
 pingroom attachment get <id> --out report.md
 pingroom attachment delete <id>

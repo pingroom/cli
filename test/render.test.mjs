@@ -11,8 +11,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildMetrics, buildOptions, canonicalTemplate, formatPollProgress, formatPollTally, normalizeAccent,
-  printResolution, printApproval, printHandoff,
+  buildMetrics, buildOptions, canonicalTemplate, exitForWatch, formatPollProgress, formatPollTally, isApprovalShape,
+  normalizeAccent, printResolution, printApproval, printHandoff,
 } from '../lib/render.js';
 import { stripControlChars } from '../lib/util.js';
 
@@ -143,4 +143,21 @@ test('a closed poll prints its winner to stdout and the tally to stderr; a tie p
     process.stdout.write = write;
     process.stderr.write = writeErr;
   }
+});
+
+test('watch treats exactly the approve/deny pair as a gate, and nothing else', () => {
+  const pair = [{ value: 'approve', label: 'Approve' }, { value: 'deny', label: 'Deny' }];
+  assert.equal(isApprovalShape({ options: pair }), true);
+  assert.equal(isApprovalShape({ options: [...pair].reverse() }), true);
+  assert.equal(isApprovalShape({ options: ['approve', 'deny'] }), true);
+  assert.equal(isApprovalShape({ options: [...pair, { value: 'hold' }] }), false);
+  assert.equal(isApprovalShape({ options: [{ value: 'allow' }, { value: 'deny' }] }), false);
+  assert.equal(isApprovalShape({}), false);
+
+  const answered = (value, options = pair) => ({ state: 'answered', options, answer: value === null ? null : { value } });
+  assert.equal(exitForWatch(answered('approve')), 0);
+  assert.equal(exitForWatch(answered('deny')), 4);
+  assert.equal(exitForWatch(answered(null)), 4, 'a tied approve/deny poll did not approve');
+  assert.equal(exitForWatch({ state: 'expired', options: pair, answer: null }), 3);
+  assert.equal(exitForWatch(answered('deny', [{ value: 'hold' }, { value: 'deny' }])), 0);
 });
