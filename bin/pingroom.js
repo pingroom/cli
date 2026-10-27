@@ -37,7 +37,7 @@
 // for one module per command.
 
 import { EXIT } from '../lib/constants.js';
-import { fail, stripControlChars } from '../lib/util.js';
+import { CliExit, fail, stripControlChars } from '../lib/util.js';
 import { VERSION } from '../lib/version.js';
 import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
@@ -154,13 +154,18 @@ async function main() {
   return exitAfterOutput(code);
 }
 
-// Anything that escapes a handler is a bug in this tool, not a usage error, but
-// the operator still gets one clean line instead of a Node stack trace — and the
-// same exit 1 every other failure uses, so scripts branching on the code are
-// unaffected. PINGROOM_DEBUG keeps the stack for whoever is fixing it.
+// fail() ends a command by throwing CliExit; its message is already on stderr,
+// so all that is left is to exit with its code once the output has drained.
+// Anything else that escapes a handler is a bug in this tool, not a usage
+// error, but the operator still gets one clean line instead of a Node stack
+// trace — and the same exit 1 every other failure uses, so scripts branching on
+// the code are unaffected. PINGROOM_DEBUG keeps the stack for whoever is fixing
+// it.
 main().catch((error) => {
+  if (error instanceof CliExit) return exitAfterOutput(error.code);
   if (process.env.PINGROOM_DEBUG) {
     process.stderr.write(`${error?.stack ?? error}\n`);
   }
-  fail(`unexpected error: ${stripControlChars(error?.message ?? String(error))}`);
+  process.stderr.write(`pingroom: unexpected error: ${stripControlChars(error?.message ?? String(error))}\n`);
+  return exitAfterOutput(EXIT.ERROR);
 });

@@ -4,8 +4,8 @@
 // interesting cases are cheap and numerous. These run in-process.
 //
 // Only total functions are exercised here: every rejection path in render.js
-// calls fail(), which calls process.exit() and would take the test runner with
-// it. Those refusals stay covered by the subprocess tests in cli.test.mjs.
+// calls fail(), which writes to stderr and ends the command. Those refusals
+// stay covered by the subprocess tests in cli.test.mjs.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

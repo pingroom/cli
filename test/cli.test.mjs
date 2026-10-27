@@ -810,6 +810,62 @@ test('ping --json flushes a response larger than the pipe buffer before exiting'
   }
 });
 
+test('a failing command still flushes everything it already wrote to a pipe', async () => {
+  // fail() used to call process.exit() straight away, and piped stdout is
+  // asynchronous on macOS: everything past the first 64 KiB was dropped.
+  const receipt = JSON.stringify({ success: false, message: 'Rejected', data: 'x'.repeat(256 * 1024) });
+  const { server, baseUrl } = await startServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(422, { 'Content-Type': 'application/json' });
+      res.end(receipt);
+    });
+  });
+  try {
+    const { status, stdout, stderr } = await runAsync(['ping', '-w', `${baseUrl}/hook`, '-m', 'hello', '--json']);
+    assert.equal(status, 1);
+    assert.match(stderr, /delivery failed: Rejected/);
+    assert.equal(stdout, `${receipt}\n`);
+  } finally {
+    server.close();
+  }
+});
+
+test('listen delivers every printed ping before a fatal 401 ends it', async () => {
+  const batch = Array.from({ length: 100 }, (_, i) => ({ id: `n${i}`, message: 'x'.repeat(4096), room: { name: 'R' } }));
+  let calls = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    calls += 1;
+    res.writeHead(calls === 1 ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(calls === 1 ? { notifications: batch, cursor: 'n99' } : { message: 'Unauthenticated.' }));
+  });
+  try {
+    // A consumer that does not read for the first 1.5 s: everything past the
+    // pipe's own buffer has to wait in the child, which used to exit on the
+    // 401 and drop it.
+    const { status, stdout, stderr } = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [CLI, 'listen', '--json', '--from', 'n0', '--token', 'tok', '--api', baseUrl], {
+        env: baseEnv(),
+      });
+      let out = '';
+      let err = '';
+      const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+      setTimeout(() => child.stdout.on('data', (c) => { out += c; }), 1500);
+      child.stderr.on('data', (c) => { err += c; });
+      child.on('error', reject);
+      child.on('close', (code) => { clearTimeout(kill); resolve({ status: code, stdout: out, stderr: err }); });
+      child.stdin.end();
+    });
+    assert.equal(status, 1);
+    assert.match(stderr, /listen failed: Unauthenticated/);
+    const lines = stdout.trimEnd().split('\n');
+    assert.equal(lines.length, 100);
+    assert.equal(JSON.parse(lines[99]).id, 'n99');
+  } finally {
+    server.close();
+  }
+});
+
 // Urgency and acknowledgement are independent flags. They used to be one, so
 // `--urgent` must never smuggle `requires_ack` into the body, and
 // `--require-ack` must never smuggle `is_urgent`.
@@ -5890,6 +5946,33 @@ test('skills install refuses to clobber before it touches the network', () => {
   // Nothing was created for the skill that had not been installed yet.
   assert.equal(existsSync(join(dir, 'pingroom-cli')), false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('a failed skills install still removes its temporary clone', async () => {
+  // fail() inside install()'s try/finally used to exit before the finally ran,
+  // leaving the clone in the temp directory. A stand-in `git` "clones" an empty
+  // tree, so the layout check fails with nothing reaching the network.
+  const root = mkdtempSync(join(tmpdir(), 'pingroom-skills-fail-'));
+  const bin = join(root, 'bin');
+  const temp = join(root, 'tmp');
+  const target = join(root, 'skills');
+  mkdirSync(bin);
+  mkdirSync(temp);
+  writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  try {
+    const { status, stderr } = await runAsync(['skills', 'install', '--dir', target], {
+      PATH: `${bin}:${process.env.PATH}`,
+      TMPDIR: temp,
+      // The audit preload intercepts `git clone`; this git never leaves the machine.
+      NODE_OPTIONS: undefined,
+    });
+    assert.equal(status, 1, stderr);
+    assert.match(stderr, /the repo layout changed/);
+    assert.deepEqual(readdirSync(temp).filter((name) => name.startsWith('pingroom-skills-')), []);
+    assert.equal(existsSync(join(target, 'pingroom-mcp')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // --------------------------------------------------- update notification
