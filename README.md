@@ -542,9 +542,15 @@ Full protocol: <https://pingroom.io/liveactivities.md>
 
 ## Hearing replies
 
-Everything else here talks; `listen` is how an agent hears — replies to its own
-structured pings, a human's ping in a room it belongs to, anything landing while
-it works.
+Everything else here talks; `listen` is how an agent hears what the other
+members of its rooms send while it works, their replies to its structured pings
+included.
+
+The server leaves out everything sent as the connected account: the human's own
+pings and replies, the agent's own sends, other agents on the same account, and
+incoming-webhook and scheduled pings in rooms the account owns (those are sent
+as the owner). To hear the connected human, ask a question and wait for the
+answer (`ask --wait`, or `ask` then `watch`).
 
 ```bash
 pingroom listen                      # block, printing each ping as it lands
