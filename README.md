@@ -335,7 +335,7 @@ fi
 pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --scope room --wait \
   -p 'Which environment?' -o prod:Production -o staging:Staging -o cancel:Cancel
 
-# A poll (needs a CLI release after 0.13.0): everyone in the room votes once; the winning value prints:
+# A poll (needs CLI 0.14.0 or newer): everyone in the room votes once; the winning value prints:
 pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
   -p 'Lunch?' -o pizza:Pizza -o tacos:Tacos
 
@@ -370,7 +370,7 @@ Question; reusing it with a changed request returns `409 idempotency_conflict`.
 
 ### Polls
 
-Requires a CLI release after 0.13.0; 0.13.0 rejects `--poll` as an unknown
+Requires CLI 0.14.0 or newer; 0.13.0 rejects `--poll` as an unknown
 option.
 
 `--poll` asks the whole room for a vote instead of taking the first tap
