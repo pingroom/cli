@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { update } from '../lib/commands/update.js';
 import { parseUpdateArgs } from '../lib/parser.js';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { run } from './helpers.mjs';
 
 async function check(t, args, overrides = {}) {
   let output = '';
@@ -106,4 +107,43 @@ else if (args[0] === 'install') {
   assert.deepEqual(JSON.parse(result.stdout), { current_version: '0.0.1', latest_version: '0.11.0', updated: true, update_available: false });
   assert.deepEqual(JSON.parse(readFileSync(receipt)), ['install', '--global', '@pingroom/cli@0.11.0', '--no-fund', '--no-audit']);
   assert.equal(JSON.parse(readFileSync(manifest)).version, '0.11.0');
+});
+
+// --------------------------------------------------- update notification
+
+test('isNewer only upgrades on a strictly greater release number', async () => {
+  const { isNewer } = await import('../lib/update-check.js');
+  assert.equal(isNewer('0.8.0', '0.7.6'), true);
+  assert.equal(isNewer('0.10.0', '0.9.0'), true);
+  assert.equal(isNewer('1.0.0', '0.9.9'), true);
+  assert.equal(isNewer('0.7.6', '0.7.6'), false);
+  assert.equal(isNewer('0.7.5', '0.7.6'), false);
+  // A prerelease must never trigger the notice: npm's `latest` should not point
+  // at one, and guessing wrong nags on every single run.
+  assert.equal(isNewer('0.8.0-beta.1', '0.7.6'), false);
+  assert.equal(isNewer('', '0.7.6'), false);
+  assert.equal(isNewer(null, '0.7.6'), false);
+  assert.equal(isNewer('0.8.0', 'not-a-version'), false);
+});
+
+test('the update check stays silent and writes nothing when stdout is not a TTY', () => {
+  // Spawned with piped stdio, i.e. exactly how CI and `pingroom … | jq` run it.
+  const home = mkdtempSync(join(tmpdir(), 'pingroom-upd-'));
+  const { status, stderr } = run(['skills'], {
+    PINGROOM_HOME: home,
+    PINGROOM_NO_UPDATE_CHECK: '',
+    CI: '',
+  });
+  assert.equal(status, 0);
+  assert.equal(stderr, '');
+  assert.equal(existsSync(join(home, 'update-check.json')), false);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('update help works offline and describes check and JSON', () => {
+  const result = run(['update', '--help']);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /^update options:/);
+  assert.match(result.stdout, /--check/);
+  assert.match(result.stdout, /--json/);
 });
