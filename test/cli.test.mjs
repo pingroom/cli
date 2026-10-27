@@ -103,6 +103,13 @@ test('GitHub Action exposes ask inputs and outputs through the same output proto
   assert.equal(action.match(/exit \$code/g).length, 2);
 });
 
+test('GitHub Action passes --room to ping only alongside a token', () => {
+  // An explicit --room selects the agent-token path, so webhook-url + room
+  // (no token) must keep pinging the webhook's room.
+  const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
+  assert.match(action, /\[ -n "\$PR_ROOM" \] && \[ -n "\$PINGROOM_TOKEN" \] && args\+=\(--room "\$PR_ROOM"\)/);
+});
+
 test('GitHub Action splits options on newlines first so a label may contain a comma', () => {
   const action = readFileSync(join(__dirname, '..', 'action.yml'), 'utf8');
   // One shared splitter, used by every branch that forwards options.
@@ -6764,4 +6771,87 @@ test('ask, approval and handoff fail when a 2xx create carries no id', async () 
     server.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- explicit transport flags beat PINGROOM_WEBHOOK_URL ----------------------
+
+/** A stub that answers both transports and records which one was used. */
+function transportServer() {
+  return questionServer({
+    'POST /webhooks/room/HOOKSECRET': () => ({ status: 200, body: { success: true } }),
+    'POST /api/agent/rooms/ab12cd/notifications': () => ({ status: 201, body: { id: 'n1' } }),
+    'POST /api/agent/rooms/ab12cd/live': () => ({ status: 200, body: { state: 'running' } }),
+    'POST /api/agent/attachments': () => ({ status: 201, body: { attachment: { id: 'att-1' } } }),
+  });
+}
+
+test('an explicit --token/--room beats a PINGROOM_WEBHOOK_URL in the environment', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-transport-'));
+  const file = join(dir, 'report.txt');
+  writeFileSync(file, 'build log');
+  const env = { PINGROOM_WEBHOOK_URL: `${baseUrl}/webhooks/room/HOOKSECRET` };
+  try {
+    for (const argv of [
+      ['ping', '-m', 'hi', '--token', 'tok', '--room', 'ab12cd'],
+      // --room alone picks the token path too; the token comes from the env.
+      ['ping', '-m', 'hi', '--room', 'ab12cd'],
+      // --attach used to fail with "requires an agent token" despite --token.
+      ['ping', '-m', 'hi', '--token', 'tok', '--room', 'ab12cd', '--attach', file],
+      ['live', 'start', '-c', 'deploy-1', '--token', 'tok', '--room', 'ab12cd'],
+    ]) {
+      received.length = 0;
+      const extra = argv.includes('--token') ? {} : { PINGROOM_TOKEN: 'tok' };
+      const { status, stderr } = await runAsync([...argv, '--api', baseUrl], { ...env, ...extra });
+      assert.equal(status, 0, `${argv.join(' ')}: ${stderr}`);
+      assert.ok(received.length > 0);
+      assert.ok(received.every((r) => r.path.startsWith('/api/agent/')), `${argv.join(' ')} reached ${received.map((r) => r.path)}`);
+    }
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('run sends its completion ping on the explicit token path, not the env webhook', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  try {
+    const { status, stderr } = await runAsync(
+      ['run', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--', process.execPath, '-e', ''],
+      { PINGROOM_WEBHOOK_URL: `${baseUrl}/webhooks/room/HOOKSECRET` },
+    );
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(received.map((r) => r.path), ['/api/agent/rooms/ab12cd/notifications']);
+  } finally {
+    server.close();
+  }
+});
+
+test('PINGROOM_WEBHOOK_URL is still the transport when no flag names one', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  try {
+    const { status, stderr } = await runAsync(['ping', '-m', 'hi'], {
+      PINGROOM_WEBHOOK_URL: `${baseUrl}/webhooks/room/HOOKSECRET`, PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd',
+    });
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(received.map((r) => r.path), ['/webhooks/room/HOOKSECRET']);
+  } finally {
+    server.close();
+  }
+});
+
+test('naming both transports is a usage error, and --room without a token says why', () => {
+  for (const argv of [
+    ['ping', '-m', 'hi', '--webhook', 'https://hooks.example/w', '--token', 'tok'],
+    ['ping', '-m', 'hi', '--webhook', 'https://hooks.example/w', '--room', 'ab12cd'],
+    ['live', 'start', '-c', 'deploy-1', '--webhook', 'https://hooks.example/w', '--token', 'tok'],
+    ['run', '--webhook', 'https://hooks.example/w', '--token', 'tok', '--', process.execPath, '-e', ''],
+  ]) {
+    const { status, stderr } = run(argv);
+    assert.equal(status, 2, `${argv.join(' ')}: ${stderr}`);
+    assert.match(stderr, /--webhook cannot be combined with --token or --room/);
+  }
+  const { status, stderr } = run(['ping', '-m', 'hi', '--room', 'ab12cd'], { PINGROOM_WEBHOOK_URL: 'https://hooks.example/w' });
+  assert.equal(status, 2);
+  assert.match(stderr, /--room selects the agent-token path.*PINGROOM_WEBHOOK_URL is ignored/);
 });

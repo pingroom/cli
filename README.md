@@ -218,12 +218,19 @@ pingroom ping [options]
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
-  -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL)
+  -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
+                         applies only when neither --token nor --room is given;
+                         --webhook with either is a usage error)
       --token <token>    Agent access token (or env PINGROOM_TOKEN)
       --room <code>      Room invite code (used with --token)
       --api <url>        API base URL (env PINGROOM_API_URL)
       --json             Print the raw JSON response
 ```
+
+Explicit flags pick the transport for `ping`, `live` and `run`: `--webhook`
+posts to that webhook, and an explicit `--token` or `--room` takes the agent
+path even when `PINGROOM_WEBHOOK_URL` is exported for the whole job. The env
+var is the fallback when no transport flag is given.
 
 Ping titles are limited to 40 characters. Bodies are limited to 120 characters
 in private rooms and 160 in public rooms. A room code or webhook URL does not

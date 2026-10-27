@@ -245,7 +245,10 @@ runs:
         [ -n "$PR_DATA" ]   && args+=(-d "$PR_DATA")
         [ -n "$PR_URL" ]    && args+=(--url "$PR_URL")
         [ -n "$PR_BUTTON_LABEL" ] && args+=(--button-label "$PR_BUTTON_LABEL")
-        [ -n "$PR_ROOM" ]   && args+=(--room "$PR_ROOM")
+        # --room selects the agent-token path, so pass it only with a token:
+        # alongside webhook-url alone it was always ignored, and the CLI now
+        # refuses an explicit --room it has no token to deliver with.
+        [ -n "$PR_ROOM" ] && [ -n "$PINGROOM_TOKEN" ] && args+=(--room "$PR_ROOM")
         [ "$PR_URGENT" = "true" ] && args+=(--urgent)
         [ "$PR_REQUIRE_ACK" = "true" ] && args+=(--require-ack)
         [ -n "$PR_ACK_MODE" ] && args+=(--ack-mode "$PR_ACK_MODE")
