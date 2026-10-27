@@ -3757,17 +3757,20 @@ test('activate honors Retry-After for ensure and wait 429s, then completes activ
     const { status, stdout, stderr } = await runAsync(
       ['activate', '--api', baseUrl],
       { PINGROOM_HOME: home, NODE_ENV: 'test' },
-      { timeoutMs: 8000 },
+      { timeoutMs: 10_000 },
     );
     assert.equal(status, 0, stderr);
     const elapsed = Date.now() - startedAt;
-    assert.ok(elapsed >= 2_900, 'wait retries must honor Retry-After beyond the polling cadence');
-    assert.ok(elapsed < 4_500, 'Retry-After should not add the exponential fallback delay');
+    // 1 s for the floored Retry-After: 0, then 3 s for the wait's Retry-After.
+    assert.ok(elapsed >= 3_900, 'wait retries must honor Retry-After beyond the polling cadence');
+    assert.ok(elapsed < 5_500, 'Retry-After should not add the exponential fallback delay');
     assert.match(stdout, /Agent Inbox is ready/);
     const ensures = received.filter((r) => r.path === '/api/agent/inbox/ensure');
     const waits = received.filter((r) => r.path === '/api/agent/handoffs/q-onboard/wait');
     assert.equal(ensures.length, 2);
-    assert.ok(ensures[1].at - ensures[0].at < 500, 'ensure should honor Retry-After: 0');
+    // Retry-After: 0 is floored at 1 s, never an immediate retry.
+    const ensureGap = ensures[1].at - ensures[0].at;
+    assert.ok(ensureGap >= 950 && ensureGap < 1_500, `ensure retried after ${ensureGap} ms`);
     assert.equal(waits.length, 2);
     assert.ok(waits[1].at - waits[0].at >= 2_900);
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
@@ -6624,4 +6627,49 @@ test('hook cancels its phone question before deferring a failed wait to a local 
     assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
     assert.ok(received.some((request) => request.method === 'POST' && request.path === '/api/agent/questions/q_x/cancel'));
   } finally { server.close(); }
+});
+
+// --- Retry-After bounds -------------------------------------------------------
+
+test('Retry-After is floored at 1 s and capped at 60 s for every caller', async () => {
+  const { retryAfterMs } = await import('../lib/http.js');
+  const header = (value) => ({ headers: new Headers(value === undefined ? {} : { 'Retry-After': value }) });
+  assert.equal(retryAfterMs(header(undefined)), null);
+  assert.equal(retryAfterMs(header('soon')), null);
+  // 0 and a past HTTP date used to mean "retry immediately".
+  assert.equal(retryAfterMs(header('0')), 1000);
+  assert.equal(retryAfterMs(header(new Date(Date.now() - 60_000).toUTCString())), 1000);
+  assert.equal(retryAfterMs(header('3')), 3000);
+  // Past 2^31-1 ms Node's setTimeout fires after 1 ms, so an unbounded value
+  // turned "wait a very long time" into "retry back to back".
+  assert.equal(retryAfterMs(header('9999999')), 60_000);
+  // A persisted schedule (credential cleanup) may opt into a longer ceiling.
+  assert.equal(retryAfterMs(header('120'), { max: 24 * 60 * 60 * 1000 }), 120_000);
+});
+
+test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () => {
+  const at = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    at.push(Date.now());
+    if (at.length === 1) {
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '0' });
+      res.end(JSON.stringify({ message: 'Too Many Attempts.' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ notifications: [{ id: 'n2', message: 'hi', room: { name: 'R' } }], cursor: 'n2' }));
+  });
+  try {
+    const { status, stdout } = await runAsync(
+      ['listen', '--once', '--from', 'n1', '--token', 'tok', '--api', baseUrl],
+      {},
+      { timeoutMs: 8000 },
+    );
+    assert.equal(status, 0);
+    assert.match(stdout, /\[R\] hi/);
+    assert.equal(at.length, 2);
+    assert.ok(at[1] - at[0] >= 950, `retried after ${at[1] - at[0]} ms`);
+  } finally {
+    server.close();
+  }
 });
