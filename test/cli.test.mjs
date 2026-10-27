@@ -1114,7 +1114,7 @@ test('a test that forgets --api fails fast on loopback instead of reaching produ
   // https://api.pingroom.io with a dummy bearer on every run.
   const { status, stderr } = run(['ping', '--token', 'tok', '--room', 'ab12cd', '-m', 'hi']);
   assert.equal(status, 1);
-  assert.match(stderr, /network error/);
+  assert.match(stderr, /network error \(http:\/\/127\.0\.0\.1:9\)/);
   assert.doesNotMatch(stderr, /api\.pingroom\.io/);
 });
 
@@ -6671,5 +6671,63 @@ test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () 
     assert.ok(at[1] - at[0] >= 950, `retried after ${at[1] - at[0]} ms`);
   } finally {
     server.close();
+  }
+});
+
+// --- secrets never reach stderr through a fetch error ------------------------
+
+test('a webhook or API URL with user credentials is refused before anything is sent', () => {
+  const secretHook = 'https://u:p@127.0.0.1/webhooks/room/WEBHOOKSECRETPATH';
+  for (const argv of [
+    ['ping', '-m', 'hi', '--webhook', secretHook],
+    ['live', 'start', '-c', 'deploy-1', '--webhook', secretHook],
+    ['ping', '-m', 'hi', '--token', 'tok', '--room', 'ab12cd', '--api', 'https://u:p@127.0.0.1'],
+  ]) {
+    const { status, stderr } = run(argv);
+    assert.equal(status, 2, `${argv.join(' ')}: ${stderr}`);
+    assert.match(stderr, /must not contain URL user credentials/);
+    assert.doesNotMatch(stderr, /WEBHOOKSECRETPATH|u:p@/);
+  }
+  const { status, stderr } = run(['ping', '-m', 'hi'], { PINGROOM_WEBHOOK_URL: secretHook });
+  assert.equal(status, 2);
+  assert.doesNotMatch(stderr, /WEBHOOKSECRETPATH/);
+});
+
+test('a fetch error that quotes the bearer is reported without it', async () => {
+  // fetch() refuses a header value with a line break and quotes the whole
+  // value in its message — here, the token.
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const { status, stderr } = await runAsync(['ping', '-m', 'hi', '--token', 'tok\nTOKENSECRET', '--room', 'ab12cd', '--api', baseUrl]);
+    assert.equal(status, 1);
+    assert.match(stderr, /network error \(http:\/\/127\.0\.0\.1:\d+\): the request could not be built/);
+    assert.doesNotMatch(stderr, /TOKENSECRET/);
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('the hook defers with a secret-free reason when fetch refuses the request', async () => {
+  const { status, stdout } = await runHook(
+    ['--api', 'http://127.0.0.1:9'],
+    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+    { PINGROOM_TOKEN: 'tok\nTOKENSECRET', PINGROOM_ROOM: 'ab12cd' },
+  );
+  assert.equal(status, 0);
+  const out = JSON.parse(stdout).hookSpecificOutput;
+  assert.equal(out.permissionDecision, 'ask');
+  assert.match(out.permissionDecisionReason, /network error/);
+  assert.doesNotMatch(stdout, /TOKENSECRET/);
+});
+
+test('config set api_url refuses URL user credentials', () => {
+  const home = newHome();
+  try {
+    const { status, stderr } = run(['config', 'set', 'api_url', 'https://u:p@api.example.com'], { PINGROOM_HOME: home });
+    assert.equal(status, 2);
+    assert.match(stderr, /api_url must not contain URL user credentials/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
