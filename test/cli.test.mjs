@@ -6571,6 +6571,22 @@ test('new quick-action and request-limit error codes get an actionable hint', as
   }
 });
 
+test('ask, handoff and live measure --data the way the server does', () => {
+  // ~1,500 Persian characters: about 3 KB of UTF-8, but about 9 KB once PHP's
+  // json_encode turns each into a 6-byte \uXXXX escape.
+  const persian = JSON.stringify({ note: 'ش'.repeat(1500) });
+  assert.ok(Buffer.byteLength(persian, 'utf8') < 8 * 1024, 'the old UTF-8 check let this through');
+  for (const argv of [
+    ['ask', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--data', persian],
+    ['handoff', '--token', 'tok', '-m', 'Ship?', '--data', persian],
+    ['live', 'start', '--token', 'tok', '--room', 'ab12cd', '-c', 'deploy-1', '--data', persian],
+  ]) {
+    const { status, stderr } = run(argv);
+    assert.equal(status, 2, `${argv[0]}: ${stderr}`);
+    assert.match(stderr, /--data must serialize to at most 8 KB as the server measures it/);
+  }
+});
+
 test('--data larger than 8 KB never leaves the machine', () => {
   const big = JSON.stringify({ blob: 'x'.repeat(9 * 1024) });
   const { status, stderr } = run(['ping', '-m', 'hi', '--token', 'x'.repeat(40), '--room', 'ab12cd', '--data', big]);
