@@ -379,12 +379,20 @@ test('the published tarball carries every directory the entry point imports', ()
 // never change what a test sees.
 const EMPTY_HOME = mkdtempSync(join(tmpdir(), 'pingroom-empty-'));
 
+// The API base every spawned CLI gets unless a test names its own. Loopback,
+// and port 9 is on fetch's blocked-port list, so a request fails at once
+// without opening a socket. Without it, a test that forgets --api falls
+// through to the built-in https://api.pingroom.io and sends real traffic to
+// production. A test that needs the built-in default (or a config/credential
+// api_url to win) passes PINGROOM_API_URL: undefined, which spawn drops.
+const UNROUTABLE_API = 'http://127.0.0.1:9';
+
 /** Strip every PINGROOM_* input and pin the local state at an empty directory. */
 function baseEnv() {
   const cleanEnv = { ...process.env };
   delete cleanEnv.PINGROOM_WEBHOOK_URL;
   delete cleanEnv.PINGROOM_TOKEN;
-  delete cleanEnv.PINGROOM_API_URL;
+  cleanEnv.PINGROOM_API_URL = UNROUTABLE_API;
   delete cleanEnv.PINGROOM_ROOM;
   delete cleanEnv.PINGROOM_INTERNAL_TEST_TTY;
   delete cleanEnv.PINGROOM_INTERNAL_ACTIVATION_TIMEOUT_MS;
@@ -469,7 +477,8 @@ test('exit 0: no command prints help', () => {
 });
 
 test('exit 0: --help prints help', () => {
-  const { status, stdout } = run(['--help']);
+  // HELP names the default API, which a PINGROOM_API_URL in the child changes.
+  const { status, stdout } = run(['--help'], { PINGROOM_API_URL: undefined });
   assert.equal(status, 0);
   assert.equal(stdout, `${HELP}\n`, 'piped help must be flushed in full before exiting');
 });
@@ -1098,6 +1107,15 @@ test('exit 1: network error (connection refused)', () => {
   const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi']);
   assert.equal(status, 1);
   assert.match(stderr, /network error/);
+});
+
+test('a test that forgets --api fails fast on loopback instead of reaching production', () => {
+  // baseEnv() pins PINGROOM_API_URL; without it this would PUT to the built-in
+  // https://api.pingroom.io with a dummy bearer on every run.
+  const { status, stderr } = run(['ping', '--token', 'tok', '--room', 'ab12cd', '-m', 'hi']);
+  assert.equal(status, 1);
+  assert.match(stderr, /network error/);
+  assert.doesNotMatch(stderr, /api\.pingroom\.io/);
 });
 
 test('exit 1: duplicate JSON keys from the API are rejected before command parsing', async () => {
@@ -2152,7 +2170,7 @@ test('hook uses the QR-paired credential and room without environment variables'
   })}\n`, { mode: 0o600 });
 
   try {
-    const { status, stderr } = await runHook([], { hook_event_name: 'Stop' }, { PINGROOM_HOME: home });
+    const { status, stderr } = await runHook([], { hook_event_name: 'Stop' }, { PINGROOM_HOME: home, PINGROOM_API_URL: undefined });
     assert.equal(status, 0);
     assert.match(stderr, /pinged/);
     assert.equal(received.length, 1);
@@ -3162,7 +3180,7 @@ test('config api_url becomes the API base when no flag or env var is given', asy
     run(['config', 'set', 'api_url', baseUrl], { PINGROOM_HOME: home });
     const { status, stdout } = await runAsync(
       ['ask', '--token', 't', '--room', 'ab12cd', '-p', 'Go?'],
-      { PINGROOM_HOME: home },
+      { PINGROOM_HOME: home, PINGROOM_API_URL: undefined },
     );
     assert.equal(status, 0);
     assert.equal(stdout.trim(), 'q_cfgapi');
@@ -4063,7 +4081,7 @@ test('the credential is only ever presented to the host it was paired against', 
     });
     // No --api, no PINGROOM_API_URL, no config.api_url: only the credential says
     // where this token belongs.
-    const { status, stdout } = await runAsync(['ask', '-p', 'Go?'], { PINGROOM_HOME: home });
+    const { status, stdout } = await runAsync(['ask', '-p', 'Go?'], { PINGROOM_HOME: home, PINGROOM_API_URL: undefined });
     assert.equal(status, 0, stdout);
     assert.equal(stdout.trim(), 'q_paired');
     assert.equal(received.length, 1, 'the request must have reached the paired host');
@@ -4599,7 +4617,7 @@ test('file delivery uses the same room for an explicit code, pasted link, and pa
   seedCredential(home, { token: 'paired-token', api_url: baseUrl, room: { invite_code: 'ABC123' } });
   try {
     for (const roomArgs of [[], ['--room', 'ABC123'], ['--room', ' #ABC123 '], ['--room', 'https://pgr.link/j/ABC123']]) {
-      const result = await runAsync(['ping', '-m', 'File ready', '--attach', file, ...roomArgs], { PINGROOM_HOME: home });
+      const result = await runAsync(['ping', '-m', 'File ready', '--attach', file, ...roomArgs], { PINGROOM_HOME: home, PINGROOM_API_URL: undefined });
       assert.equal(result.status, 0, result.stderr);
     }
     const deliveries = received.filter((request) => request.path.endsWith('/notifications'));
@@ -5708,7 +5726,7 @@ test('actions set validates the slot and required fields locally', () => {
   assert.match(noIcon.stderr, /needs --label \(may be empty\) and --icon/);
 });
 
-test('actions set-all validates the batch locally before spending a request', () => {
+test('actions set-all validates the batch locally before spending a request', async () => {
   const token = ['--token', 'x'.repeat(40), '--room', 'ABC123'];
 
   const empty = run(['actions', 'set-all', ...token]);
@@ -5739,10 +5757,21 @@ test('actions set-all validates the batch locally before spending a request', ()
 
   // An emoji-only Ping is valid here exactly as it is for `actions set`, so an
   // empty label must survive local validation rather than reading as missing.
-  const emojiOnly = run([
-    'actions', 'set-all', ...token, '--set', '{"action_number":1,"label":"","icon":"🔥"}',
-  ]);
-  assert.notEqual(emojiOnly.status, 2);
+  // It goes out, so it goes to a local stub: this case used to fall through to
+  // the built-in https://api.pingroom.io on every run.
+  const { server, baseUrl, received } = await questionServer({
+    'PUT /api/agent/rooms/ABC123/actions': () => ({ status: 200, body: { actions: [] } }),
+  });
+  try {
+    const emojiOnly = await runAsync([
+      'actions', 'set-all', ...token, '--api', baseUrl, '--set', '{"action_number":1,"label":"","icon":"🔥"}',
+    ]);
+    assert.equal(emojiOnly.status, 0, emojiOnly.stderr);
+    assert.equal(received.length, 1);
+    assert.deepEqual(JSON.parse(received[0].body), { actions: [{ action_number: 1, label: '', icon: '🔥' }] });
+  } finally {
+    server.close();
+  }
 
   const tooMany = run([
     'actions', 'set-all', ...token,
