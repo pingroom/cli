@@ -2395,6 +2395,36 @@ test('hook PreToolUse fails open to "ask" when the question expires', async () =
   }
 });
 
+test('hook PreToolUse re-polls a pending hold no faster than once a second', async () => {
+  // A server (or proxy) that answers `pending` at once, ignoring the hold. The
+  // hook used to re-ask immediately: ~17k requests a second for up to the
+  // 960 s hook timeout.
+  let waits = 0;
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_hot', state: 'pending' } }),
+    'GET /api/agent/questions/q_hot/wait': () => {
+      waits += 1;
+      return waits < 3
+        ? { status: 200, body: { id: 'q_hot', state: 'pending' } }
+        : { status: 200, body: { id: 'q_hot', state: 'answered', answer: { value: 'allow' } } };
+    },
+  });
+  try {
+    const started = Date.now();
+    const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } };
+    const { status, stdout } = await runHook(
+      ['--api', baseUrl], event,
+      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+    );
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'allow');
+    assert.equal(waits, 3);
+    assert.ok(Date.now() - started >= 2000, 'two pending rounds must cost at least the 1 s floor each');
+  } finally {
+    server.close();
+  }
+});
+
 test('hook PreToolUse fails open to "ask" with no token, without any request', () => {
   const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } };
   // No server needed: missing config must short-circuit before any network call.
