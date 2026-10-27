@@ -6742,3 +6742,32 @@ test('config set api_url refuses URL user credentials', () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+// --- a create without an id is not a success --------------------------------
+
+test('ask, approval and handoff fail when a 2xx create carries no id', async () => {
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: {} }),
+    'POST /api/agent/handoffs': () => ({ status: 201, body: { state: 'open' } }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-noid-'));
+  try {
+    const outputs = join(dir, 'github-output');
+    writeFileSync(outputs, '');
+    for (const [argv, what] of [
+      [['ask', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--github-output', outputs], 'ask'],
+      [['ask', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--wait'], 'ask'],
+      [['approval', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?'], 'approval'],
+      [['handoff', '--token', 'tok', '-m', 'Ship?', '--github-output', outputs], 'handoff'],
+    ]) {
+      const { status, stdout, stderr } = await runAsync([...argv, '--api', baseUrl], {}, { timeoutMs: 8000 });
+      assert.equal(status, 1, `${argv.join(' ')}: ${stderr}`);
+      assert.equal(stdout, '', 'no "undefined" id on stdout');
+      assert.match(stderr, new RegExp(`${what} returned no id`));
+    }
+    assert.equal(readFileSync(outputs, 'utf8'), '', 'no empty question-id/handoff-id reaches the workflow');
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
