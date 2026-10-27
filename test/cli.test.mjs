@@ -5467,7 +5467,7 @@ test('management nouns fail as usage errors without a sub-command or token', () 
 // with the protected routes they call; it is never sent during negotiation.
 
 test('every dispatched command declares the scopes it needs', async () => {
-  const { COMMAND_SCOPES } = await import('../lib/scopes.js');
+  const { COMMAND_SCOPES } = await import('./support/command-scopes.js');
   const source = readFileSync(new URL('../bin/pingroom.js', import.meta.url), 'utf8');
 
   // Read the dispatch table out of the binary itself rather than restating it,
@@ -5483,7 +5483,7 @@ test('every dispatched command declares the scopes it needs', async () => {
   for (const command of dispatched) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(COMMAND_SCOPES, command),
-      `"${command}" is dispatched but declares no scopes in lib/scopes.js — add it (use [] if it touches no agent route)`,
+      `"${command}" is dispatched but declares no scopes in test/support/command-scopes.js — add it (use [] if it touches no agent route)`,
     );
   }
 });
@@ -5916,13 +5916,13 @@ test('the update check stays silent and writes nothing when stdout is not a TTY'
   rmSync(home, { recursive: true, force: true });
 });
 
-// --- the continuation record ------------------------------------------------
+// --- nothing about the session stays on disk ----------------------------------
 //
-// The resume hint the hook writes stays on this machine. These pin both halves:
-// it IS recorded locally, and it is NOT on the wire (asserted above, in the two
-// hook `data` assertions).
+// The hook used to write a resume hint (session, cwd, transcript path) to
+// ~/.pingroom/continuations.json on every PreToolUse. Nothing ever read it, and
+// parallel hooks overwrote each other's entries without a lock, so it is gone.
 
-test('the hook records a local continuation and forgets it once answered', async () => {
+test('the hook writes no continuation file while it waits on the phone', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pingroom-cont-'));
   const { server, baseUrl } = await questionServer({
     'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_cont', state: 'pending' } }),
@@ -5940,47 +5940,25 @@ test('the hook records a local continuation and forgets it once answered', async
       cwd: '/work/repo',
       transcript_path: '/work/t.jsonl',
     });
-    const { status } = await runAsync(
+    const { status, stdout } = await runAsync(
       ['hook', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl],
       { PINGROOM_HOME: dir },
       { stdin: event },
     );
     assert.equal(status, 0);
-
-    // Answered, so the hint has done its job and is pruned.
-    const after = JSON.parse(readFileSync(join(dir, 'continuations.json'), 'utf8'));
-    assert.deepEqual(after.entries, {}, 'a resolved question leaves no continuation behind');
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'allow');
+    assert.equal(existsSync(join(dir, 'continuations.json')), false);
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a continuation survives while its question is still open', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pingroom-cont2-'));
-  const { recordContinuation, readContinuation, forgetContinuation } =
-    await import('../lib/continuations.js');
-  const prev = process.env.PINGROOM_HOME;
-  process.env.PINGROOM_HOME = dir;
-  try {
-    recordContinuation('q_1', { sessionId: 's-9', cwd: '/repo', transcriptPath: '/t.jsonl' });
-    const row = readContinuation('q_1');
-    assert.equal(row.session_id, 's-9');
-    assert.equal(row.cwd, '/repo');
-    assert.equal(row.transcript_path, '/t.jsonl');
-    assert.ok(Date.parse(row.recorded_at) > 0);
-
-    // Bounded: the file cannot grow without limit.
-    for (let i = 0; i < 120; i += 1) recordContinuation(`q_bulk_${i}`, { sessionId: 's' });
-    const entries = JSON.parse(readFileSync(join(dir, 'continuations.json'), 'utf8')).entries;
-    assert.ok(Object.keys(entries).length <= 100, 'store is capped at 100 entries');
-
-    forgetContinuation('q_bulk_119');
-    assert.equal(readContinuation('q_bulk_119'), null);
-  } finally {
-    if (prev === undefined) delete process.env.PINGROOM_HOME; else process.env.PINGROOM_HOME = prev;
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('the npm package ships no test-only module', () => {
+  // `files: ["bin", "lib"]` publishes everything under lib/, so a module only
+  // the tests import belongs under test/.
+  assert.equal(existsSync(join(__dirname, '..', 'lib', 'scopes.js')), false);
+  assert.equal(existsSync(join(__dirname, '..', 'lib', 'continuations.js')), false);
 });
 
 // --- reconnect, end to end --------------------------------------------------

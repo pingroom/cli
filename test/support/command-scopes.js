@@ -1,4 +1,7 @@
-// What each command needs. Pairing itself intentionally sends no scope list:
+// What each command needs. Test-only: it lives under test/ because nothing in
+// bin/ or lib/ reads it, and package.json publishes all of lib/.
+//
+// Pairing itself intentionally sends no scope list:
 // the server owns the full access policy and consent copy, so adding a command
 // never makes an older client mint a narrower credential or demand a reconnect.
 
