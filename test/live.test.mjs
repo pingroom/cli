@@ -354,3 +354,31 @@ test('an unknown template names the alias, not the wire id, in the usage error',
   assert.match(stderr, /decision/);
   assert.doesNotMatch(stderr, /question/);
 });
+
+// CL-02: `live -a two` posted "action": null, so the card silently had no action.
+test('live refuses a --action that is not a slot from 1 to 16, and sends a valid one as a number', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ state: 'running' }));
+    });
+  });
+  try {
+    const base = ['live', 'start', '-c', 'rel-1', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl];
+    for (const bad of ['two', '2a', '#2', '0', '17', '']) {
+      const { status, stderr } = await runAsync([...base, '-a', bad]);
+      assert.equal(status, 2, `-a ${JSON.stringify(bad)}: ${stderr}`);
+      assert.match(stderr, /--action must be an integer 1–16/);
+    }
+    assert.equal(received.length, 0);
+    const ok = await runAsync([...base, '-a', '3']);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(received[0]).action, 3);
+  } finally {
+    server.close();
+  }
+});

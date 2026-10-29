@@ -43,9 +43,10 @@ import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
 import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
-  parseArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs,
-  parseLiveArgs, parseLogoutArgs, parseManageArgs, parsePairArgs, parseQArgs,
-  parseReconnectArgs, parseRedeemArgs, parseRunArgs, parseSkillsArgs, parseUpdateArgs,
+  parseArgs, parseCancelArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs,
+  parseHookArgs, parseListArgs, parseListenArgs, parseLiveArgs, parseLogoutArgs, parseManageArgs,
+  parsePairArgs, parseQArgs, parseReconnectArgs, parseRedeemArgs, parseRunArgs, parseSkillsArgs,
+  parseUpdateArgs, parseWatchArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
 import { ping } from '../lib/commands/ping.js';
@@ -66,13 +67,13 @@ const COMMANDS = {
   ping: (rest) => ping(parseArgs(rest)),
   run: (rest) => run(parseRunArgs(rest)),
   ask: (rest) => ask(parseQArgs(rest)),
-  watch: (rest) => waitFrom(watch, rest),
-  await: (rest) => waitFrom(watch, rest),
-  cancel: (rest) => cancel(parseQArgs(rest)),
-  list: (rest) => list(parseQArgs(rest)),
+  watch: (rest) => watch(parseWatchArgs(rest)),
+  await: (rest) => watch(parseWatchArgs(rest)),
+  cancel: (rest) => cancel(parseCancelArgs(rest)),
+  list: (rest) => list(parseListArgs(rest)),
   handoff: (rest) => handoff(parseHandoffArgs(rest)),
   handoffs: (rest) => listHandoffs(parseHandoffsArgs(rest)),
-  listen: (rest) => listen(parseQArgs(rest)),
+  listen: (rest) => listen(parseListenArgs(rest)),
   hook: (rest) => hook(parseHookArgs(rest)),
   mcp,
   skills: (rest) => skills(parseSkillsArgs(rest)),
@@ -90,10 +91,6 @@ const COMMANDS = {
   pair: (rest) => pair(parsePairArgs(rest)),
   logout: (rest) => logout(parseLogoutArgs(rest)),
 };
-
-function waitFrom(handler, rest) {
-  return handler(parseQArgs(rest));
-}
 
 // Local setup/help commands and latency-sensitive hooks stay offline. Ordinary
 // API commands resume previously authorized cleanup using its saved origin.

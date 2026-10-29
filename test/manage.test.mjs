@@ -307,3 +307,76 @@ test('attachment get still streams bytes into a pipe, and --out - means stdout',
     server.close();
   }
 });
+
+// CL-02: `Number('two')` is NaN, which JSON.stringify writes as null, so these
+// used to unbind a webhook's quick action and exit 0.
+test('webhooks refuse a non-numeric --action, --cooldown or --enabled before sending anything', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/webhooks': () => ({ status: 201, body: { id: 'wh-1' } }),
+    'PUT /api/agent/rooms/ab12cd/webhooks/wh-1': () => ({ status: 200, body: { id: 'wh-1' } }),
+  });
+  try {
+    const base = ['--room', 'ab12cd', '--token', 'tok', '--api', baseUrl];
+    for (const [flags, expected] of [
+      [['--action', 'two'], /--action must be an integer 1–16/],
+      [['--action', '2a'], /--action must be an integer 1–16/],
+      [['--action', '#2'], /--action must be an integer 1–16/],
+      [['--action', '0'], /--action must be an integer 1–16/],
+      [['--action', '17'], /--action must be an integer 1–16/],
+      [['--cooldown', 'soon'], /--cooldown must be a number/],
+      [['--cooldown', '61'], /--cooldown must be at most 60/],
+      [['--cooldown', '1.5'], /--cooldown must be an integer/],
+      [['--enabled', 'maybe'], /--enabled must be true or false/],
+      [['--enabled', ''], /--enabled must be true or false/],
+    ]) {
+      for (const verb of [['update', 'wh-1'], ['create', '--name', 'Deploy']]) {
+        const { status, stderr } = await runAsync(['webhooks', ...verb, ...flags, ...base]);
+        assert.equal(status, 2, `${verb[0]} ${flags.join(' ')}: ${stderr}`);
+        assert.match(stderr, expected);
+      }
+    }
+    assert.equal(received.length, 0, 'nothing reached the API');
+  } finally {
+    server.close();
+  }
+});
+
+test('webhooks send valid --action and --cooldown as numbers', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'PUT /api/agent/rooms/ab12cd/webhooks/wh-1': () => ({ status: 200, body: { id: 'wh-1' } }),
+  });
+  try {
+    const { status, stderr } = await runAsync([
+      'webhooks', 'update', 'wh-1', '--action', '16', '--cooldown', '0',
+      '--room', 'ab12cd', '--token', 'tok', '--api', baseUrl,
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(JSON.parse(received[0].body), { action_number: 16, cooldown_seconds: 0 });
+  } finally {
+    server.close();
+  }
+});
+
+// CL-07: only the exact string "false" disabled a webhook; "False", "0" and "no"
+// sent enabled: true and exited 0.
+test('webhooks --enabled reads true/false, 1/0 and yes/no in any case', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'PUT /api/agent/rooms/ab12cd/webhooks/wh-1': () => ({ status: 200, body: { id: 'wh-1' } }),
+  });
+  try {
+    const cases = [
+      ['false', false], ['False', false], ['FALSE', false], ['0', false], ['no', false], ['NO', false],
+      ['true', true], ['True', true], ['1', true], ['yes', true], ['Yes', true],
+    ];
+    for (const [value, enabled] of cases) {
+      const { status, stderr } = await runAsync([
+        'webhooks', 'update', 'wh-1', '--enabled', value,
+        '--room', 'ab12cd', '--token', 'tok', '--api', baseUrl,
+      ]);
+      assert.equal(status, 0, `--enabled ${value}: ${stderr}`);
+      assert.deepEqual(JSON.parse(received.at(-1).body), { enabled }, `--enabled ${value}`);
+    }
+  } finally {
+    server.close();
+  }
+});

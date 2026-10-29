@@ -7,11 +7,12 @@
     "pingroom": "bin/pingroom.js"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test test/*.test.mjs"
   },
   "files": [
     "bin",
-    "lib"
+    "lib",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": ">=20"

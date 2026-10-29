@@ -355,7 +355,9 @@ If PingRoom becomes unreachable while `ask --wait`, `approval --wait`,
 line after three failures in a row, and exits `1` with `PingRoom unavailable
 since …; stopped waiting` once the outage outlasts the question's or handoff's
 expiry by 5 minutes (15 minutes of failures for a `watch` that has not read the
-expiry yet). It never exits `0` without an answer.
+expiry yet). It never exits `0` without an answer. A wait whose API answers
+`200` without a `state` is an invalid response, not a pending one: it exits `1`
+at once (`invalid response while waiting for …`) instead of polling forever.
 
 Options are `value:label` pairs (repeat `-o` for 2–4). Omit them for the binary
 Approve/Deny default — two options is the lock-screen fast path. `--ttl` sets the
@@ -570,8 +572,17 @@ The server holds each request open until something arrives, so this is a
 long-poll rather than a poll loop: an idle hour costs about 144 requests, not
 one per second. With no `--from` it starts from *now* — the first call takes the
 head cursor and returns nothing, so starting up never replays history. Transient
-failures (429, 5xx, network) back off geometrically and keep listening;
+failures (429, 5xx, network), including on that first request, back off
+geometrically and keep listening; after three in a row `listen` says so on
+stderr with the cause (`PingRoom unavailable (ECONNREFUSED); retrying`).
 `--once` is the form to use in a script.
+
+`listen` hears every room the connection covers. There is no room filter in the
+API, so `--room` (and `listen OPS123`) is a usage error rather than a flag that
+is accepted and ignored — filter the output (`--json`, then `room.code`)
+instead. The same goes for `list`, `watch` and `cancel`. A round that ends
+early, such as `--timeout 0`, is padded to one request every 2 seconds: the feed
+route allows 30 requests a minute per account, shared by every listener on it.
 
 ## Managing rooms, webhooks, and quick actions
 
@@ -592,7 +603,7 @@ pingroom rooms join GZNFB6BZGJIH
 
 pingroom webhooks list --room GZNFB6BZGJIH
 pingroom webhooks create --room GZNFB6BZGJIH --name "CI" --action 2   # prints the secret URL once
-pingroom webhooks update <id> --room GZNFB6BZGJIH --enabled false
+pingroom webhooks update <id> --room GZNFB6BZGJIH --enabled false   # true|false|1|0|yes|no, any case
 pingroom webhooks delete <id> --room GZNFB6BZGJIH
 
 pingroom actions list --room GZNFB6BZGJIH                   # shows [needs location|link|file|photo|pdf] and (disabled) slots
@@ -618,6 +629,11 @@ pingroom attachment delete <id>
 
 Creating webhooks and uploading attachments require a Pro account; public-room
 creation runs under its own consent scope (`pingroom:rooms:publish`).
+
+On `webhooks create|update`, `--action` is a slot from 1 to 16, `--cooldown` is
+0–60 seconds, and `--enabled` is `true|false|1|0|yes|no` in any case; anything
+else is a usage error (exit 2) before a request is sent. The same 1–16 rule
+applies to `live --action` and `ping --action`.
 
 **Quick pings that need a detail.** An action's `input_type` (`none`, `location`,
 `link`, `file`, `photo`, `pdf`) makes every press carry a detail. `actions list`
@@ -672,9 +688,10 @@ fresh read so nothing is renumbered blind.
 
 # Or ask the whole room instead of one person. Same outputs, plus question-id.
 # `scope: room` is what opens it to the room — without it a question is
-# answerable only by the connecting account. Requires v0.7.5 or newer.
+# answerable only by the connecting account. Requires v0.7.5 or newer, so this
+# example pins an exact tag (see Version requirements below).
 - id: env
-  uses: pingroom/cli@v0.7.5
+  uses: pingroom/cli@v0.14.0
   with:
     token: ${{ secrets.PINGROOM_TOKEN }}
     room: ab12cd
@@ -799,7 +816,11 @@ or the question expires, the hook defers to the normal local prompt
 (`permissionDecision: "ask"`) and exits 0. It never auto-approves and never
 blocks the agent. Because the `PreToolUse` hook holds the tool call open while it
 waits for you, give it a generous `timeout` (the printed config uses 960s) and
-tune the approval-question expiry with `--ttl <seconds>` (default 900).
+tune the approval-question expiry with `--ttl <seconds>` (default 900). While it
+waits on your phone the hook retries a `429`, a `5xx` or a dropped connection
+(backoff, honouring `Retry-After`) until the question expires plus 30 seconds, so
+one deploy blip does not cancel an approval you walked away to give; only then,
+or on an error that cannot get better, does it withdraw the question and defer.
 
 **It never asks you to approve what you can't see.** The question shows the
 tool call in full — line breaks and invisible characters escaped, and the whole

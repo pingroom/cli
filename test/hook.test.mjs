@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { CLI, EMPTY_HOME, baseEnv, runAsync, questionServer, newHome, seedCredential } from './helpers.mjs';
+import { CLI, EMPTY_HOME, baseEnv, runAsync, questionServer, startServer, newHome, seedCredential } from './helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -562,20 +562,160 @@ test('the hook writes no continuation file while it waits on the phone', async (
   }
 });
 
-test('hook cancels its phone question before deferring a failed wait to a local prompt', async () => {
-  const { server, baseUrl, received } = await questionServer({
-    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_x', state: 'pending' } }),
-    'GET /api/agent/questions/q_x/wait': () => ({ status: 503, body: { message: 'Unavailable' } }),
-    'POST /api/agent/questions/q_x/cancel': () => ({ status: 200, body: { state: 'cancelled' } }),
+/**
+ * A stub for the PreToolUse approval: the create answers 201 with `expiresAt`, and
+ * `waits` scripts the GET /wait answers in order (the last one repeats):
+ * `{ status, body, headers }`, `{ status, html }` for a proxy's error page, or
+ * `{ drop: true }` to cut the connection, or `{ stall: true }` to never answer.
+ * Records every request.
+ */
+async function approvalServer(waits, { expiresAt = new Date(Date.now() + 3_600_000).toISOString() } = {}) {
+  const received = [];
+  let waitCount = 0;
+  const started = await startServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      const path = req.url.split('?')[0];
+      received.push({ method: req.method, path, at: Date.now() });
+      const json = (status, body, headers = {}) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+        res.end(JSON.stringify(body));
+      };
+      if (req.method === 'POST' && path === '/api/agent/rooms/ab12cd/questions') {
+        json(201, { id: 'q_blip', state: 'pending', expires_at: expiresAt });
+      } else if (req.method === 'GET' && path === '/api/agent/questions/q_blip/wait') {
+        const step = waits[Math.min(waitCount++, waits.length - 1)];
+        if (step.drop) { req.socket.destroy(); return; }
+        if (step.stall) return;
+        if (step.html) {
+          res.writeHead(step.status, { 'Content-Type': 'text/html', ...step.headers });
+          res.end(step.html);
+        } else json(step.status, step.body, step.headers);
+      } else if (req.method === 'POST' && path === '/api/agent/questions/q_blip/cancel') {
+        json(200, { state: 'cancelled' });
+      } else json(404, { message: 'no route' });
+    });
   });
+  return {
+    ...started,
+    received,
+    get waits() { return received.filter((request) => request.method === 'GET'); },
+    get cancels() { return received.filter((request) => request.path.endsWith('/cancel')); },
+  };
+}
+
+const APPROVED = { status: 200, body: { id: 'q_blip', state: 'answered', answer: { value: 'allow' } } };
+
+async function runApproval(baseUrl) {
+  return runHook(['--api', baseUrl],
+    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+    { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' });
+}
+
+test('hook cancels its phone question before deferring a wait that stays down past the question expiry', async () => {
+  const { HOOK_EXPIRY_GRACE_MS } = await import('../lib/commands/hook.js');
+  // The question's expiry plus grace runs out 2.5 s from now.
+  const expiresAt = new Date(Date.now() - HOOK_EXPIRY_GRACE_MS + 2500).toISOString();
+  const stub = await approvalServer([{ status: 503, body: { message: 'Unavailable' } }], { expiresAt });
+  const { server, baseUrl, received } = stub;
   try {
-    const { status, stdout } = await runHook(['--api', baseUrl],
-      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
-      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' });
+    const started = Date.now();
+    const { status, stdout } = await runApproval(baseUrl);
+    const { waits, cancels } = stub;
+    const elapsed = Date.now() - started;
+    assert.equal(status, 0);
+    const out = JSON.parse(stdout).hookSpecificOutput;
+    assert.equal(out.permissionDecision, 'ask');
+    assert.match(out.permissionDecisionReason, /PingRoom unavailable \(Unavailable\)/);
+    assert.equal(cancels.length, 1, 'the question is withdrawn once the bound is reached');
+    assert.equal(received.at(-1).path, '/api/agent/questions/q_blip/cancel');
+    // It retried (1 s, then 2 s backoff, clamped to the bound) instead of giving up at once.
+    assert.ok(waits.length >= 2 && waits.length <= 4, `${waits.length} wait requests`);
+    assert.ok(elapsed >= 2200 && elapsed < 9000, `gave up after ${elapsed} ms`);
+  } finally { server.close(); }
+});
+
+// CL-01: the hook cancelled the phone approval on the first 429, 5xx or dropped
+// connection of a 15-minute wait. pollDecision rides out exactly these for the
+// other blocking waits.
+test('hook keeps the phone approval alive through a dropped connection, a 429 and a 5xx page', async () => {
+  const stub = await approvalServer([
+    { drop: true },
+    { status: 429, body: { message: 'Too Many Attempts.' }, headers: { 'Retry-After': '1' } },
+    { status: 502, html: '<html><body>Bad Gateway</body></html>', headers: { 'Retry-After': '1' } },
+    APPROVED,
+  ]);
+  const { server, baseUrl, received } = stub;
+  try {
+    const started = Date.now();
+    const { status, stdout, stderr } = await runApproval(baseUrl);
+    const { waits, cancels } = stub;
+    assert.equal(status, 0, stderr);
+    const out = JSON.parse(stdout).hookSpecificOutput;
+    assert.equal(out.permissionDecision, 'allow');
+    assert.equal(out.permissionDecisionReason, 'Approved via PingRoom');
+    assert.equal(waits.length, 4);
+    assert.equal(cancels.length, 0, 'the question must stay on the phone');
+    assert.equal(received.filter((request) => request.method === 'POST').length, 1, 'only the create is a POST');
+    // Each retry waits at least a second; they never hammer the API.
+    const times = waits.map((request) => request.at);
+    for (let i = 1; i < times.length; i += 1) {
+      assert.ok(times[i] - times[i - 1] >= 950, `retry ${i} came after ${times[i] - times[i - 1]} ms`);
+    }
+    assert.ok(Date.now() - started >= 2900);
+  } finally { server.close(); }
+});
+
+test('hook defers at once, withdrawing the question, on a wait failure that cannot get better', async () => {
+  for (const [label, step, reason] of [
+    ['a 404', { status: 404, body: { message: 'Not found' } }, /PingRoom unavailable \(Not found\)/],
+    ['a 401', { status: 401, body: { message: 'Unauthenticated.' } }, /Unauthenticated/],
+    // CS-03: a 2xx with no state would otherwise be re-polled until the hook timeout.
+    ['a 2xx with no state', { status: 200, body: {} }, /without a state/],
+  ]) {
+    const stub = await approvalServer([step]);
+    const { server, baseUrl } = stub;
+    try {
+      const { status, stdout } = await runApproval(baseUrl);
+      const { waits, cancels } = stub;
+      assert.equal(status, 0, label);
+      const out = JSON.parse(stdout).hookSpecificOutput;
+      assert.equal(out.permissionDecision, 'ask', label);
+      assert.match(out.permissionDecisionReason, reason, label);
+      assert.equal(waits.length, 1, `${label} is not retried`);
+      assert.equal(cancels.length, 1, `${label} withdraws the question`);
+    } finally { server.close(); }
+  }
+});
+
+// A wait request that stalls near the deadline must not run its full 45 s:
+// past the 960 s hook timeout Claude Code kills the hook before it withdraws
+// the question.
+test('hook never lets a stalled wait request run past its retry deadline', async () => {
+  const { HOOK_EXPIRY_GRACE_MS } = await import('../lib/commands/hook.js');
+  const expiresAt = new Date(Date.now() - HOOK_EXPIRY_GRACE_MS + 1500).toISOString();
+  const stub = await approvalServer([{ stall: true }], { expiresAt });
+  const { server, baseUrl } = stub;
+  try {
+    const started = Date.now();
+    const { status, stdout } = await runApproval(baseUrl);
+    const elapsed = Date.now() - started;
     assert.equal(status, 0);
     assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
-    assert.ok(received.some((request) => request.method === 'POST' && request.path === '/api/agent/questions/q_x/cancel'));
-  } finally { server.close(); }
+    assert.equal(stub.cancels.length, 1, 'the question is withdrawn');
+    assert.ok(elapsed < 10_000, `the stalled wait held the hook for ${elapsed} ms`);
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('the hook retry deadline is the earlier of the server expiry and the local ttl, plus grace', async () => {
+  const { HOOK_EXPIRY_GRACE_MS, hookWaitDeadline } = await import('../lib/commands/hook.js');
+  const sentAt = Date.parse('2026-10-29T12:00:00Z');
+  // A server clock an hour ahead must not stretch the retries past the hook timeout.
+  assert.equal(hookWaitDeadline({ expiresAt: '2026-10-29T13:15:00Z', sentAt, ttl: 900 }), sentAt + 900_000 + HOOK_EXPIRY_GRACE_MS);
+  assert.equal(hookWaitDeadline({ expiresAt: '2026-10-29T12:10:00Z', sentAt, ttl: 900 }), sentAt + 600_000 + HOOK_EXPIRY_GRACE_MS);
+  for (const expiresAt of [undefined, null, 'not a date', 42]) {
+    assert.equal(hookWaitDeadline({ expiresAt, sentAt, ttl: 900 }), sentAt + 900_000 + HOOK_EXPIRY_GRACE_MS);
+  }
 });
 
 test('the hook defers with a secret-free reason when fetch refuses the request', async () => {

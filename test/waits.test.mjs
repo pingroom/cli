@@ -177,3 +177,72 @@ test('a network failure is named without the URL or the token', async () => {
     process.exitCode = exitCode;
   }
 });
+
+// --- a 2xx without a state is an invalid answer, not "still pending" ----------
+//
+// The outage bound above covers failures only. A gateway or mock that answers
+// 200 JSON without `state` used to be re-polled once a second for as long as the
+// job ran, printing nothing.
+
+test('watch, ask --wait and handoff --wait stop on a 2xx that names no state', async () => {
+  for (const body of [{}, { message: 'ok' }, { id: 'q_n', state: '' }, { id: 'q_n', state: 3 }, { id: 'q_n', state: null }]) {
+    let waits = 0;
+    const { server, baseUrl } = await questionServer({
+      'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_n', state: 'pending' } }),
+      'GET /api/agent/questions/q_n/wait': () => { waits += 1; return { status: 200, body }; },
+      'POST /api/agent/handoffs': () => ({ status: 201, body: { id: 'h_n', kind: 'ack', state: 'open', delivery_state: 'enqueued' } }),
+      'GET /api/agent/handoffs/h_n/wait': () => { waits += 1; return { status: 200, body }; },
+    });
+    try {
+      const common = ['--token', 'tok', '--api', baseUrl];
+      const runs = [
+        [['watch', ...common, 'q_n'], /invalid response while waiting for question q_n: the API answered without a state/],
+        [['ask', ...common, '--room', 'ab12cd', '-p', 'Ship?', '--wait'], /invalid response while waiting for question q_n/],
+        [['approval', ...common, '--room', 'ab12cd', '-p', 'Ship?', '--wait'], /invalid response while waiting for question q_n/],
+        [['handoff', ...common, '-m', 'Ack?', '--wait'], /invalid response while waiting for handoff h_n: the API answered without a state/],
+      ];
+      for (const [argv, expected] of runs) {
+        waits = 0;
+        const { status, stdout, stderr, timedOut } = await runAsync(argv, {}, { timeoutMs: 6000 });
+        const label = `${argv[0]} with ${JSON.stringify(body)}`;
+        assert.equal(timedOut, false, `${label} used to poll forever`);
+        assert.equal(status, 1, `${label}: ${stderr}`);
+        assert.match(stderr, expected, label);
+        assert.equal(waits, 1, `${label}: one poll, not a loop`);
+        assert.equal(stdout.includes('q_n') && argv[0] === 'watch', false, 'nothing is printed as a verdict');
+      }
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('a pending answer still keeps the wait going, and a missing state does not hide behind --json', async () => {
+  let waits = 0;
+  const { server, baseUrl } = await questionServer({
+    'GET /api/agent/questions/q_p/wait': () => {
+      waits += 1;
+      return waits === 1
+        ? { status: 200, body: { id: 'q_p', state: 'pending' } }
+        : { status: 200, body: { id: 'q_p', state: 'answered', answer: { value: 'ship' } } };
+    },
+  });
+  try {
+    const { status, stdout, timedOut } = await runAsync(['watch', '--token', 'tok', '--api', baseUrl, '--json', 'q_p'], {}, { timeoutMs: 10_000 });
+    assert.equal(timedOut, false);
+    assert.equal(status, 0);
+    assert.equal(waits, 2);
+    assert.equal(JSON.parse(stdout).answer.value, 'ship');
+  } finally {
+    server.close();
+  }
+  const empty = await questionServer({ 'GET /api/agent/questions/q_j/wait': () => ({ status: 200, body: {} }) });
+  try {
+    const { status, stdout, stderr } = await runAsync(['watch', '--token', 'tok', '--api', empty.baseUrl, '--json', 'q_j'], {}, { timeoutMs: 6000 });
+    assert.equal(status, 1);
+    assert.equal(stdout, '', '--json must not print a body that is not a decision');
+    assert.match(stderr, /without a state/);
+  } finally {
+    empty.server.close();
+  }
+});

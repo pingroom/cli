@@ -110,6 +110,80 @@ test('exit 2: --button-label over 26 chars', () => {
   assert.match(stderr, /--button-label must be at most 26 characters/);
 });
 
+// CL-06: the server's `data.button_label max:26` counts code points. The CLI
+// counted UTF-16 units, so 14 emoji (28 units) were refused locally.
+test('--button-label counts characters the way the server does', async () => {
+  const label = '🚀'.repeat(14);
+  assert.equal(Array.from(label).length, 14);
+  assert.equal(label.length, 28);
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+  });
+  try {
+    const base = ['ping', '-w', `${baseUrl}/hook`, '-m', 'hi', '--url', 'https://example.com'];
+    const ok = await runAsync([...base, '--button-label', '🚀'.repeat(26)]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(received[0]).data.button_label, '🚀'.repeat(26));
+    const tooLong = await runAsync([...base, '--button-label', '🚀'.repeat(27)]);
+    assert.equal(tooLong.status, 2);
+    assert.match(tooLong.stderr, /--button-label must be at most 26 characters \(got 27\)/);
+    assert.equal(received.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+// The server's `data` rule is `array|max:25`: more keys than that is a 422 the
+// caller can do nothing about, so it is a usage error here.
+test('exit 2: --data with more than 25 top-level keys', () => {
+  const data = Object.fromEntries(Array.from({ length: 26 }, (_, i) => [`k${i}`, i]));
+  const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', '-d', JSON.stringify(data)]);
+  assert.equal(status, 2);
+  assert.match(stderr, /--data may have at most 25 top-level keys \(got 26\)/);
+});
+
+test('--data at exactly 25 keys is still sent, and --url/--location count toward the cap', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+  });
+  try {
+    const keys = (n) => JSON.stringify(Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, i])));
+    const ok = await runAsync(['ping', '-w', `${baseUrl}/hook`, '-m', 'hi', '-d', keys(25)]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(Object.keys(JSON.parse(received[0]).data).length, 25);
+    // 25 raw keys plus the key --url adds is 26 on the wire.
+    const merged = await runAsync(['ping', '-w', `${baseUrl}/hook`, '-m', 'hi', '-d', keys(25), '--url', 'https://example.com']);
+    assert.equal(merged.status, 2);
+    assert.match(merged.stderr, /data \(including --item, --location and --url\) may have at most 25 top-level keys \(got 26\)/);
+    assert.equal(received.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+// CL-02: ping already validated --action; the other commands now share its rule.
+test('exit 2: ping --action keeps its 1–16 check through the shared helper', () => {
+  for (const bad of ['two', '0', '17', '1.5']) {
+    const { status, stderr } = run(['ping', '-w', 'http://127.0.0.1:1/hook', '-m', 'hi', '-a', bad]);
+    assert.equal(status, 2, bad);
+    assert.match(stderr, /--action must be an integer 1–16/);
+  }
+});
+
 test('exit 2: location metadata flags require --location', () => {
   for (const [flag, value] of [
     ['--location-label', 'Office'],
