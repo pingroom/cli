@@ -220,6 +220,7 @@ pingroom ping [options]
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
+      --idempotency-key <k>  Dedupe key; a retry replays the first ping (requires --token)
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
                          applies only when neither --token nor --room is given;
                          --webhook with either is a usage error)
@@ -369,7 +370,9 @@ ASCII characters. Spaces are allowed, and surrounding whitespace is trimmed as
 the server does; anything else, such as an emoji or Cyrillic, exits `2` before
 sending. Retrying the same key with the same request returns the original
 Question; reusing it with a changed request returns `409 idempotency_conflict`.
-`approval`, `handoff` and `actions trigger` take the same rule.
+`approval`, `handoff`, `actions trigger` and `ping` take the same rule. `ping`
+needs an agent token: a webhook ping has no replay guard, so
+`--idempotency-key` with `--webhook` exits `2`. `live` takes no key.
 
 ### Polls
 

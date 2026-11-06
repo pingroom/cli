@@ -848,3 +848,39 @@ test('naming both transports is a usage error, and --room without a token says w
   assert.equal(status, 2);
   assert.match(stderr, /--room selects the agent-token path.*PINGROOM_WEBHOOK_URL is ignored/);
 });
+
+test('--idempotency-key rides the Idempotency-Key header of an agent ping, never the body', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  try {
+    const { status, stderr } = await runAsync([
+      'ping', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-m', 'hi', '--idempotency-key', '  evt-42:1 ',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.equal(received.length, 1);
+    assert.equal(received[0].idempotency, 'evt-42:1');
+    assert.deepEqual(JSON.parse(received[0].body), { message: 'hi' });
+  } finally {
+    server.close();
+  }
+});
+
+test('--idempotency-key is refused before any request when invalid or on a webhook ping', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  try {
+    for (const key of ['', '   ', 'deploy-✅', 'x'.repeat(256)]) {
+      const { status, stderr } = await runAsync([
+        'ping', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-m', 'hi', '--idempotency-key', key,
+      ]);
+      assert.equal(status, 2, JSON.stringify(key));
+      assert.match(stderr, /--idempotency-key must be 1–255 printable ASCII/);
+    }
+    const webhook = await runAsync([
+      'ping', '--webhook', `${baseUrl}/webhooks/room/HOOKSECRET`, '-m', 'hi', '--idempotency-key', 'evt-42:1',
+    ]);
+    assert.equal(webhook.status, 2);
+    assert.match(webhook.stderr, /--idempotency-key needs an agent token/);
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
+  }
+});

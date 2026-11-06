@@ -240,7 +240,7 @@ for (const command of ['ask', 'handoff', 'ping', 'live start']) {
   });
 }
 
-for (const command of ['ask', 'handoff', 'approval', 'actions trigger']) {
+for (const command of ['ask', 'handoff', 'approval', 'actions trigger', 'ping']) {
   test(`${command}: --idempotency-key is refused or sent trimmed as the server's verdict says`, { skip }, async () => {
     await withStub(command, async (base, received, spec) => {
       for (const id of COMMAND_KEY_VECTORS) {
