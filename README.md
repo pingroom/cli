@@ -29,7 +29,7 @@ pingroom ping -m "Deploy succeeded ✅"
 - [Ping options, files, links, and locations](#usage)
 - [Get notified when a command finishes](#command-completion)
 - [Questions](#ask-a-human-questions) · [Handoffs](#handoffs-agent--human)
-- [Live Activities](#live-activities-pingroom-live) · [Hearing replies](#hearing-replies)
+- [Live Activities](#live-activities-pingroom-live) · [Hearing replies](#hearing-replies) · [Bot mailbox](#bot-mailbox)
 - [Rooms, webhooks, and quick actions](#managing-rooms-webhooks-and-quick-actions)
 - [GitHub Actions](#github-actions) · [GitLab CI](#gitlab-ci) · [Shell and curl](#plain-shell--curl)
 - [Claude Code hooks](#claude-code-integration-get-pinged-by-your-agent) · [MCP setup](#mcp-client-setup)
@@ -131,6 +131,7 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Reach your human directly | `handoff`, `handoffs` | [Handoffs](#handoffs-agent--human) |
 | Show live progress | `live start`, `update`, `end`, `get` | [Live Activities](#live-activities-pingroom-live) |
 | Receive pings | `listen` | [Hearing replies](#hearing-replies) |
+| Run a Grok Bot routine | `bot claim`, `ack`, `extend`, `done`, `peek` | [Bot mailbox](#bot-mailbox) |
 | Manage your setup | `rooms`, `webhooks`, `actions`, `attachment` | [Management](#managing-rooms-webhooks-and-quick-actions) |
 | Connect or change settings | `pingroom`, `pair`, `reconnect`, `activate`, `config`, `logout` | [Connecting](#connecting) |
 | Set up an agent | `skills`, `mcp`, `hook` | [Skills](#agent-skills) · [MCP](#mcp-client-setup) · [Hooks](#claude-code-integration-get-pinged-by-your-agent) |
@@ -584,6 +585,59 @@ instead. The same goes for `list`, `watch` and `cancel`. A round that ends
 early, such as `--timeout 0`, is padded to one request every 2 seconds: the feed
 route allows 30 requests a minute per account, shared by every listener on it.
 
+## Bot mailbox
+
+Requires CLI 0.15.0 or newer and a PingRoom bot connection (Grok Bot), made in
+the PingRoom app. The connection gives the bot its own credential once. Set it
+as `PINGROOM_TOKEN` where the bot runs. An ordinary agent credential has no
+mailbox and gets `no_bot_connection`.
+
+PingRoom keeps the events the owner creates for the bot (messages, quick-action
+taps, answers to its Questions) and rings the bot's routine with a doorbell
+that carries no text. The woken routine reads them with `bot`:
+
+```bash
+pingroom bot claim --json            # lease pending events (up to --limit, default 20)
+pingroom bot ack "$ID1" "$ID2"       # mark handled events done
+pingroom bot extend                  # a long task: keep the 10-minute lease
+pingroom bot done --json             # finish; returns events that arrived mid-run
+pingroom bot peek                    # counts, leases nothing
+```
+
+```
+      --limit <n>        bot claim only: 1-50, default 20
+      --json             Print the raw JSON response
+```
+
+`claim` leases events for 10 minutes. `--json` prints the response as is: the
+leased `events`, the connection's `open_tasks` and its `room`. Without `--json`
+each event is one line, `<id> <type> <trust> delivery=<n>`, with ` stale` after
+it when it outlived its freshness window, then a summary line. When nothing is
+waiting `claim` prints nothing and exits `0`, so a routine that was woken twice
+ends silently the second time.
+
+`ack` takes 1 to 50 event ids, checks they are UUIDs before sending, and
+reports the ids it did not know as `unknown` without failing.
+
+`done` ends a run. It exits `0` and prints `done` when nothing is waiting. If
+something arrived while the run was working, it leases those events exactly as
+`claim` does, prints them, and exits `5`, so a shell loop knows to go round
+again:
+
+```bash
+pingroom bot claim --json > events.json
+while :; do
+  # handle events.json, then: pingroom bot ack <ids>
+  pingroom bot done --json > events.json
+  [ $? -eq 5 ] || break
+done
+```
+
+Exit codes: `0` success · `1` error · `2` bad usage · `5` `bot done` returned more
+events. A `404 no_bot_connection` prints that the credential has no bot
+connection. A plain `404` means Grok Bot is switched off on that server. A `401`
+prints the usual "run `pingroom reconnect`" line.
+
 ## Managing rooms, webhooks, and quick actions
 
 The management nouns cover the rest of the agent surface (agent token required;
@@ -712,6 +766,7 @@ acknowledgement, urgency, and idempotency options on `actions trigger`.
 Use **0.12.0 or newer** for quick ping input details (`actions trigger
 --location / --url / --attach`, `actions set --input-type`), `actions layout`,
 and `rooms create --location`.
+Use **0.15.0 or newer** for the Grok Bot mailbox (`bot claim|ack|extend|done|peek`).
 For GitHub Actions, use `pingroom/cli@v0.11.0` or a newer release.
 
 `ask`, `context`, `timeout`, `api` and the `question-id` output were added in

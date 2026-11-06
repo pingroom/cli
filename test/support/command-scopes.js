@@ -29,6 +29,7 @@ export const COMMAND_SCOPES = {
   listen: ['pingroom:notifications:read'],
   hook: ['pingroom:questions:ask', 'pingroom:broadcast:send'],
   live: ['pingroom:live:write'],
+  bot: ['pingroom:bot:events'],
   rooms: [
     'pingroom:rooms:read', 'pingroom:rooms:write',
     'pingroom:rooms:publish', 'pingroom:rooms:join',

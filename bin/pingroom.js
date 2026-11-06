@@ -21,6 +21,8 @@
 //   listen   Long-poll for pings arriving in the agent's rooms.
 //   live     Drive a live progress card (iOS Live Activity / Android live
 //            update) on the room members' lock screen: start / update / end.
+//   bot      Claim, ack, extend and finish the Grok Bot mailbox events a
+//            PingRoom bot connection holds for its routine.
 //   mcp      Print the canonical remote MCP endpoint and client setup snippets.
 //   skills   List the published agent skills, or install them for Claude Code.
 //   redeem   Redeem a gifted or promotional Pro code for the connected account.
@@ -29,7 +31,7 @@
 //   logout   Forget the credential in ~/.pingroom/credentials.json.
 //
 // Exit codes: 0 success/answered/acked · 1 error · 2 bad usage · 3 expired ·
-// 4 cancelled/recipient-not-ready.
+// 4 cancelled/recipient-not-ready · 5 `bot done` returned more events.
 //
 // This file is the entry point only: the dispatch table, main(), and the
 // top-level catch. Everything it calls lives under lib/ — see lib/help.js for
@@ -43,12 +45,13 @@ import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
 import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
-  parseArgs, parseCancelArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs,
+  parseArgs, parseBotArgs, parseCancelArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs,
   parseHookArgs, parseListArgs, parseListenArgs, parseLiveArgs, parseLogoutArgs, parseManageArgs,
   parsePairArgs, parseQArgs, parseReconnectArgs, parseRedeemArgs, parseRunArgs, parseSkillsArgs,
   parseUpdateArgs, parseWatchArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
+import { bot } from '../lib/commands/bot.js';
 import { ping } from '../lib/commands/ping.js';
 import { run } from '../lib/commands/run.js';
 import { ask, cancel, list, watch } from '../lib/commands/ask.js';
@@ -74,6 +77,7 @@ const COMMANDS = {
   handoff: (rest) => handoff(parseHandoffArgs(rest)),
   handoffs: (rest) => listHandoffs(parseHandoffsArgs(rest)),
   listen: (rest) => listen(parseListenArgs(rest)),
+  bot: (rest) => bot(parseBotArgs(rest)),
   hook: (rest) => hook(parseHookArgs(rest)),
   mcp,
   skills: (rest) => skills(parseSkillsArgs(rest)),
@@ -97,7 +101,7 @@ const COMMANDS = {
 const RECOVERY_COMMANDS = new Set([
   'ping', 'ask', 'watch', 'await', 'cancel', 'list', 'handoff', 'handoffs',
   'listen', 'redeem', 'activate', 'live', 'rooms', 'webhooks', 'actions',
-  'approval', 'attachment', 'pair', 'reconnect',
+  'approval', 'attachment', 'bot', 'pair', 'reconnect',
 ]);
 
 async function exitAfterOutput(code) {
