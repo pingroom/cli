@@ -494,7 +494,7 @@ test('exit 2: --item rejects blank, overlong, and more than 25 items', () => {
   }
 });
 
-test('an unknown room says so instead of a bare "Resource not found"', async () => {
+test('an unknown room says no room has the code, not that access is missing', async () => {
   const received = [];
   const { server, baseUrl } = await startServer((req, res) => {
     received.push(req.url);
@@ -510,8 +510,56 @@ test('an unknown room says so instead of a bare "Resource not found"', async () 
     ]);
     assert.notEqual(status, 0);
     assert.equal(received[0], '/api/agent/rooms/ab12cd/notifications');
-    assert.match(stderr, /No room with code ab12cd/);
+    assert.match(stderr, /No room has the code ab12cd\./);
     assert.match(stderr, /pingroom rooms list/);
+    assert.doesNotMatch(stderr, /available to this robot|not granted|permission/i);
+  } finally {
+    server.close();
+  }
+});
+
+test('a displayed, spaced or hash-prefixed room code reaches the API as the plain code', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push({ url: req.url, body: JSON.parse(body) });
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: 'n1' }));
+    });
+  });
+  try {
+    const inputs = ['J2YL5X-5NDTUO', 'J2YL5X 5NDTUO', '#J2YL5X-5NDTUO', 'https://pgr.link/j/J2YL5X-5NDTUO'];
+    for (const room of inputs) {
+      const { status, stderr } = await runAsync(['ping', '--token', 'tok_abc', '--room', room, '--api', baseUrl, '-m', 'hi']);
+      assert.equal(status, 0, stderr);
+    }
+    const viaEnv = await runAsync(['ping', '--token', 'tok_abc', '--api', baseUrl, '-m', 'hi'], { PINGROOM_ROOM: 'J2YL5X-5NDTUO' });
+    assert.equal(viaEnv.status, 0, viaEnv.stderr);
+    assert.equal(received.length, inputs.length + 1);
+    for (const request of received) {
+      assert.equal(request.url, '/api/agent/rooms/J2YL5X5NDTUO/notifications');
+      assert.deepEqual(request.body, { message: 'hi' });
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('a refusal for a room outside the grant keeps the server message and gets no "no such room" line', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 'room_not_granted', message: 'This agent was not given access to that room.' }));
+    });
+  });
+  try {
+    const { status, stderr } = await runAsync(['ping', '--token', 'tok_abc', '--room', 'AB12CD-EF34GH', '--api', baseUrl, '-m', 'hi']);
+    assert.equal(status, 1);
+    assert.match(stderr, /This agent was not given access to that room\./);
+    assert.doesNotMatch(stderr, /No room has the code/);
   } finally {
     server.close();
   }

@@ -1,12 +1,12 @@
 {
   "name": "@pingroom/cli",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@pingroom/cli",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "license": "MIT",
       "dependencies": {
         "proper-lockfile": "^4.1.2",

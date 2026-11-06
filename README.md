@@ -235,6 +235,11 @@ posts to that webhook, and an explicit `--token` or `--room` takes the agent
 path even when `PINGROOM_WEBHOOK_URL` is exported for the whole job. The env
 var is the fallback when no transport flag is given.
 
+A room code is accepted the way the apps show it. `J2YL5X-5NDTUO`, a code with
+spaces, `#J2YL5X5NDTUO` and a join link all reach the API as `J2YL5X5NDTUO`,
+whether they come from `--room`, `PINGROOM_ROOM`, `config set default_room`,
+`rooms get` or `rooms join`.
+
 Ping titles are limited to 40 characters. Bodies are limited to 120 characters
 in private rooms and 160 in public rooms. A room code or webhook URL does not
 reveal room visibility, so the CLI rejects only bodies over 160 locally; the

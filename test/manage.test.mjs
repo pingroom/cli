@@ -110,6 +110,44 @@ test('rooms join sends the protected-room password and preserves server failures
   }
 });
 
+test('rooms get and rooms join send the plain code, and a 404 says no room has it', async () => {
+  const requests = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      requests.push({ method: req.method, url: req.url, body });
+      if (req.method === 'GET' && req.url.endsWith('/NOPE00NOPE00')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Resource not found.' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ invite_code: 'J2YL5X5NDTUO', name: 'Deploys' }));
+    });
+  });
+  try {
+    const base = ['--token', 'x'.repeat(40), '--api', baseUrl];
+    const got = await runAsync(['rooms', 'get', 'J2YL5X-5NDTUO', ...base]);
+    assert.equal(got.status, 0, got.stderr);
+    const joined = await runAsync(['rooms', 'join', 'J2YL5X 5NDTUO', ...base]);
+    assert.equal(joined.status, 0, joined.stderr);
+    const link = await runAsync(['rooms', 'join', 'https://pgr.link/j/J2YL5X-5NDTUO', ...base]);
+    assert.equal(link.status, 0, link.stderr);
+    assert.equal(requests[0].url, '/api/agent/rooms/J2YL5X5NDTUO');
+    assert.deepEqual(requests.slice(1).map((r) => JSON.parse(r.body)), [
+      { invite_code: 'J2YL5X5NDTUO' }, { invite_code: 'J2YL5X5NDTUO' },
+    ]);
+
+    const missing = await runAsync(['rooms', 'get', 'NOPE00-NOPE00', ...base]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /No room has the code NOPE00NOPE00\./);
+    assert.match(missing.stderr, /pingroom rooms list/);
+  } finally {
+    server.close();
+  }
+});
+
 test('webhooks create prints the flat trigger url the server returns', async () => {
   const { server, baseUrl } = await startServer((req, res) => {
     let body = '';
