@@ -207,6 +207,44 @@ test('bare connect accepts --agent-label while unrelated commands reject it', as
   }
 });
 
+test('--agent-label accepts 120 Unicode code points when pairing', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await pairingServer([ACTIVE_PAIR]);
+  const label = '🐦'.repeat(120);
+  try {
+    const result = await runAsync(
+      ['pair', '--api', baseUrl, '--agent-label', label],
+      { PINGROOM_HOME: home },
+      { stdin: '', timeoutMs: 20_000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const registrations = received.filter((request) => request.path === '/api/agent/auth');
+    assert.equal(registrations.length, 1);
+    assert.equal(JSON.parse(registrations[0].body).agent_label, label);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('--agent-label rejects 121 Unicode code points before provisioning', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await pairingServer([ACTIVE_PAIR]);
+  try {
+    const result = await runAsync(
+      ['pair', '--api', baseUrl, '--agent-label', '🐦'.repeat(121)],
+      { PINGROOM_HOME: home },
+      { stdin: '', timeoutMs: 20_000 },
+    );
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--agent-label must be at most 120 characters \(got 121\)/);
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('--agent-label rejects blank or control-marked names before provisioning', async () => {
   for (const label of [' ', 'robot\u001b[2J']) {
     const home = newHome();

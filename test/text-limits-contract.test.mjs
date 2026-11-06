@@ -49,7 +49,6 @@ const SOURCES = [
 // Where the CLI and the server disagree TODAY, asserted exactly: a new disagreement
 // fails the test, and so does a fixed one still listed here. Key: `<field id>#<source name>`.
 const KNOWN_DRIFT = {
-  'agent.label#--agent-label length': { finding: 'RL-17', client: 100, server: 120 },
 };
 
 function readLimit({ file, pattern }) {
