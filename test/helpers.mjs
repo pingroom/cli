@@ -3,7 +3,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +96,33 @@ export function runAsync(args, env = {}, { stdin, timeoutMs, execPath, execArgs 
   });
 }
 
+export const FAKE_TIME = join(__dirname, 'support', 'fake-time.mjs');
+
+/**
+ * runAsync on virtual time (support/fake-time.mjs), plus every sleep the CLI
+ * asked for, in order and in milliseconds. Assert on `sleeps` rather than on how
+ * long the run took: a pacing rule asks for an exact delay, while a wall clock
+ * also charges it for process start-up and a loaded machine.
+ *
+ * Nothing in the child ever waits, so a loop that only a deadline or a sleep
+ * would end must be ended by the stub server instead (a 401 after N requests).
+ */
+export async function runOnFakeTime(args, env = {}, opts = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-sleeps-'));
+  const log = join(dir, 'sleeps');
+  writeFileSync(log, '');
+  try {
+    const result = await runAsync(args, { ...env, PINGROOM_TEST_SLEEP_LOG: log }, {
+      ...opts,
+      execArgs: ['--import', FAKE_TIME, ...(opts.execArgs ?? [])],
+    });
+    const sleeps = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(Number);
+    return { ...result, sleeps };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** Start a one-shot localhost stub server. Resolves once it's listening. */
 export function startServer(handler) {
   return new Promise((resolve) => {
@@ -118,7 +145,7 @@ export function questionServer(routes) {
       received.push({ method: req.method, path, query: req.url.split('?')[1] ?? '', auth: req.headers['authorization'], idempotency: req.headers['idempotency-key'], body });
       const handler = routes[`${req.method} ${path}`];
       const out = handler ? handler(body) : { status: 404, body: { message: 'no route' } };
-      res.writeHead(out.status ?? 200, { 'Content-Type': 'application/json' });
+      res.writeHead(out.status ?? 200, { 'Content-Type': 'application/json', ...out.headers });
       res.end(JSON.stringify(out.body ?? {}));
     });
   }).then((s) => ({ ...s, received }));

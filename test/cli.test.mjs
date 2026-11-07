@@ -466,3 +466,36 @@ test('ask, approval and handoff fail when a 2xx create carries no id', async () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a create that answers with a dot-segment id is not a success either', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: '..', state: 'pending' } }),
+    'POST /api/agent/handoffs': () => ({ status: 201, body: { id: '.', kind: 'ack', state: 'open' } }),
+  });
+  try {
+    for (const argv of [
+      ['ask', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--wait'],
+      ['approval', '--token', 'tok', '--room', 'ab12cd', '-p', 'Ship?', '--wait'],
+      ['handoff', '--token', 'tok', '-m', 'Ship?', '--wait'],
+    ]) {
+      const { status, stdout, stderr } = await runAsync([...argv, '--api', baseUrl], {}, { timeoutMs: 8000 });
+      assert.equal(status, 1, `${argv.join(' ')}: ${stderr}`);
+      assert.equal(stdout, '');
+      assert.match(stderr, /returned an id that cannot be used in a URL path/);
+    }
+    assert.deepEqual(received.map((r) => r.method), ['POST', 'POST', 'POST'], 'nothing was waited on');
+  } finally {
+    server.close();
+  }
+});
+
+// --- the dispatch table is not the prototype chain ---------------------------
+
+test('names Object.prototype owns are unknown commands, not handlers', () => {
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const { status, stderr } = run([name]);
+    assert.equal(status, 2, `${name}: ${stderr}`);
+    assert.match(stderr, new RegExp(`pingroom: unknown command: ${name}\\n`));
+    assert.doesNotMatch(stderr, /unexpected error/);
+  }
+});

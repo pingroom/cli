@@ -140,6 +140,36 @@ test('--button-label counts characters the way the server does', async () => {
   }
 });
 
+// The server's `data.url max:2048` counts code points as well. 1,820 of them take
+// 2,120 UTF-16 units, so the old length check refused a URL the server accepts.
+test('--url counts characters the way the server does', async () => {
+  const url = `https://example.com/${'a'.repeat(1500)}${'😀'.repeat(300)}`;
+  assert.equal(Array.from(url).length, 1820);
+  assert.ok(url.length > 2048);
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+  });
+  try {
+    const base = ['ping', '-w', `${baseUrl}/hook`, '-m', 'hi'];
+    const ok = await runAsync([...base, '--url', url]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(received[0]).data.url, url);
+    const tooLong = await runAsync([...base, '--url', `https://example.com/${'a'.repeat(2029)}`]);
+    assert.equal(tooLong.status, 2);
+    assert.match(tooLong.stderr, /--url must be at most 2048 characters/);
+    assert.equal(received.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
 // The server's `data` rule is `array|max:25`: more keys than that is a 422 the
 // caller can do nothing about, so it is a usage error here.
 test('exit 2: --data with more than 25 top-level keys', () => {

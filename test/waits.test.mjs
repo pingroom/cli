@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runAsync, startServer, questionServer } from './helpers.mjs';
+import { run, runAsync, runOnFakeTime, startServer, questionServer } from './helpers.mjs';
+import { POLL_FLOOR_MS } from '../lib/util.js';
 
 test('decision polling survives a rate limit and a temporary server failure', async () => {
   const { pollDecision } = await import('../lib/http.js');
@@ -245,4 +246,109 @@ test('a pending answer still keeps the wait going, and a missing state does not 
   } finally {
     empty.server.close();
   }
+});
+
+// --- waits stay inside the wait routes' 30-requests-a-minute throttle ---------
+//
+// questions, approvals, handoffs and notifications `/wait` allow 30 requests a
+// minute per account, shared by every waiter and listener on it. A server (or a
+// `--timeout 0`) that answers `pending` at once, polled once a second, drew a
+// 429 for every second request and starved the account's other waits.
+
+const WAIT_COMMANDS = {
+  watch: {
+    routes: (reply) => ({ 'GET /api/agent/questions/q_w/wait': reply }),
+    argv: ['watch', 'q_w'],
+    pending: { id: 'q_w', state: 'pending' },
+    done: { id: 'q_w', state: 'answered', answer: { value: 'ship' } },
+  },
+  'ask --wait': {
+    routes: (reply) => ({
+      'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_w', state: 'pending' } }),
+      'GET /api/agent/questions/q_w/wait': reply,
+    }),
+    argv: ['ask', '--room', 'ab12cd', '-p', 'Ship?', '--wait', '--timeout', '0'],
+    pending: { id: 'q_w', state: 'pending' },
+    done: { id: 'q_w', state: 'answered', answer: { value: 'ship' } },
+  },
+  'handoff --wait': {
+    routes: (reply) => ({
+      'POST /api/agent/handoffs': () => ({ status: 201, body: { id: 'h_w', kind: 'ack', state: 'open', delivery_state: 'enqueued' } }),
+      'GET /api/agent/handoffs/h_w/wait': reply,
+    }),
+    argv: ['handoff', '-m', 'Ack?', '--wait', '--timeout', '0'],
+    pending: { id: 'h_w', kind: 'ack', state: 'open' },
+    done: { id: 'h_w', kind: 'ack', state: 'acked' },
+  },
+};
+
+test('every blocking wait paces a pending round at the poll floor', async () => {
+  for (const [name, wait] of Object.entries(WAIT_COMMANDS)) {
+    let polls = 0;
+    const { server, baseUrl } = await questionServer(wait.routes(() => {
+      polls += 1;
+      return { status: 200, body: polls < 3 ? wait.pending : wait.done };
+    }));
+    try {
+      const { status, stderr, sleeps } = await runOnFakeTime(
+        [...wait.argv, '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 10_000 },
+      );
+      assert.equal(status, 0, `${name}: ${stderr}`);
+      assert.equal(polls, 3, name);
+      assert.deepEqual(sleeps, [POLL_FLOOR_MS, POLL_FLOOR_MS], `${name}: one full floor after each pending round`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('a wait that is rate limited sleeps the Retry-After it was given, then carries on', async () => {
+  for (const [name, wait] of Object.entries(WAIT_COMMANDS)) {
+    for (const [header, expected] of [['7', 7000], ['0', 1000], [undefined, 1000]]) {
+      let polls = 0;
+      const { server, baseUrl } = await questionServer(wait.routes(() => {
+        polls += 1;
+        return polls === 1
+          ? { status: 429, body: { message: 'Too Many Attempts.' }, headers: header === undefined ? {} : { 'Retry-After': header } }
+          : { status: 200, body: wait.done };
+      }));
+      try {
+        const { status, stderr, sleeps } = await runOnFakeTime(
+          [...wait.argv, '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 10_000 },
+        );
+        const label = `${name} with Retry-After ${header}`;
+        assert.equal(status, 0, `${label}: ${stderr}`);
+        assert.equal(polls, 2, label);
+        // Retry-After is honoured, floored at 1 s; with none, the first backoff step.
+        assert.deepEqual(sleeps, [expected], label);
+        assert.doesNotMatch(stderr, /unavailable/, 'one 429 is not worth a warning');
+      } finally {
+        server.close();
+      }
+    }
+  }
+});
+
+// --- --timeout is digits ------------------------------------------------------
+
+test('an empty or non-numeric --timeout is a usage error before anything is created', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    for (const argv of [
+      ['ask', '--room', 'ab12cd', '-p', 'Ship?', '--wait'],
+      ['approval', '--room', 'ab12cd', '-p', 'Ship?', '--wait'],
+      ['handoff', '-m', 'Ack?', '--wait'],
+      ['watch', 'q_1'],
+    ]) {
+      for (const timeout of ['', ' ', 'soon', '1.5']) {
+        const { status, stderr } = await runAsync([...argv, '--timeout', timeout, '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 8000 });
+        assert.equal(status, 2, `${argv[0]} --timeout ${JSON.stringify(timeout)}: ${stderr}`);
+        assert.match(stderr, /--timeout must be a non-negative integer/);
+      }
+    }
+    assert.equal(received.length, 0, 'no question or handoff was created, no wait started');
+  } finally {
+    server.close();
+  }
+  assert.equal(run(['listen', '--timeout', '', '--token', 'x'.repeat(40)]).status, 2);
 });

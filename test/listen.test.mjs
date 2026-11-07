@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { CLI, baseEnv, run, runAsync, startServer } from './helpers.mjs';
+import { CLI, baseEnv, run, runAsync, runOnFakeTime, startServer } from './helpers.mjs';
+import { POLL_FLOOR_MS } from '../lib/util.js';
 
 test('listen delivers every printed ping before a fatal 401 ends it', async () => {
   const batch = Array.from({ length: 100 }, (_, i) => ({ id: `n${i}`, message: 'x'.repeat(4096), room: { name: 'R' } }));
@@ -115,10 +116,10 @@ test('listen refuses out-of-range holds locally, and needs a token', async () =>
 });
 
 test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () => {
-  const at = [];
+  let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
-    at.push(Date.now());
-    if (at.length === 1) {
+    requests += 1;
+    if (requests === 1) {
       res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '0' });
       res.end(JSON.stringify({ message: 'Too Many Attempts.' }));
       return;
@@ -127,15 +128,15 @@ test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () 
     res.end(JSON.stringify({ notifications: [{ id: 'n2', message: 'hi', room: { name: 'R' } }], cursor: 'n2' }));
   });
   try {
-    const { status, stdout } = await runAsync(
+    const { status, stdout, sleeps } = await runOnFakeTime(
       ['listen', '--once', '--from', 'n1', '--token', 'tok', '--api', baseUrl],
       {},
       { timeoutMs: 8000 },
     );
     assert.equal(status, 0);
     assert.match(stdout, /\[R\] hi/);
-    assert.equal(at.length, 2);
-    assert.ok(at[1] - at[0] >= 950, `retried after ${at[1] - at[0]} ms`);
+    assert.equal(requests, 2);
+    assert.deepEqual(sleeps, [1000], 'Retry-After: 0 is floored at 1 s, never an immediate retry');
   } finally {
     server.close();
   }
@@ -202,7 +203,7 @@ test('listen retries a 503 on its very first request instead of exiting 1', asyn
   const requests = [];
   const { server, baseUrl } = await startServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    requests.push({ at: Date.now(), after: url.searchParams.get('after') });
+    requests.push(url.searchParams.get('after'));
     if (requests.length === 1) {
       res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '1' });
       res.end(JSON.stringify({ message: 'Service Unavailable' }));
@@ -214,13 +215,13 @@ test('listen retries a 503 on its very first request instead of exiting 1', asyn
       : { notifications: [], cursor: 'n1' }));
   });
   try {
-    const { status, stdout, stderr } = await runAsync(
+    const { status, stdout, stderr, sleeps } = await runOnFakeTime(
       ['listen', '--once', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 10_000 },
     );
     assert.equal(status, 0, stderr);
     assert.match(stdout, /\[R\] hello/);
-    assert.deepEqual(requests.map((request) => request.after), [null, null, 'n1']);
-    assert.ok(requests[1].at - requests[0].at >= 950, 'it backs off before retrying');
+    assert.deepEqual(requests, [null, null, 'n1']);
+    assert.deepEqual(sleeps, [1000], 'it backs off for the server\'s Retry-After before retrying');
     assert.equal(stderr, '', 'one blip is not worth a warning');
   } finally {
     server.close();
@@ -244,41 +245,44 @@ test('listen names the real cause when the network stays down, and keeps retryin
 // CL-05: `--timeout 0` is answered at once, so the loop re-asked at full speed
 // until the route's 30/min throttle answered 429 for everyone on the account.
 test('listen --timeout 0 paces its rounds instead of hot-looping the shared feed route', async () => {
-  const at = [];
+  let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
-    at.push(Date.now());
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ notifications: [], cursor: 'n1' }));
+    requests += 1;
+    // The fourth round ends the run, so the loop cannot outlive a regression.
+    res.writeHead(requests < 4 ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(requests < 4 ? { notifications: [], cursor: 'n1' } : { message: 'Unauthenticated.' }));
   });
   try {
-    const { timedOut } = await runAsync(
-      ['listen', '--from', 'n1', '--timeout', '0', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 4600 },
+    const { status, stderr, sleeps } = await runOnFakeTime(
+      ['listen', '--from', 'n1', '--timeout', '0', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 8000 },
     );
-    assert.equal(timedOut, true);
-    // Unpaced, this is thousands of requests; paced at 2 s it is three.
-    assert.ok(at.length >= 2 && at.length <= 3, `${at.length} requests in 4.6 s`);
-    // The server sees arrival times, which jitter around the CLI's own 2 s clock.
-    assert.ok(at[1] - at[0] >= 1800, `second round came after ${at[1] - at[0]} ms`);
+    assert.equal(status, 1, stderr);
+    assert.equal(requests, 4);
+    // One pause after each empty round, each the full floor: unpaced, there is none.
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS, POLL_FLOOR_MS, POLL_FLOOR_MS]);
   } finally {
     server.close();
   }
 });
 
 test('listen does not pace a round that delivered pings', async () => {
-  const at = [];
+  let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
-    at.push(Date.now());
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(at.length < 3
-      ? { notifications: [{ id: `n${at.length + 1}`, message: 'x', room: { name: 'R' } }], cursor: `n${at.length + 1}` }
-      : { notifications: [], cursor: 'n3' }));
+    requests += 1;
+    const batch = requests < 3
+      ? { notifications: [{ id: `n${requests}`, message: 'x', room: { name: 'R' } }], cursor: `n${requests}` }
+      : { notifications: [], cursor: 'n3' };
+    res.writeHead(requests < 4 ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(requests < 4 ? batch : { message: 'Unauthenticated.' }));
   });
   try {
-    await runAsync(
-      ['listen', '--from', 'n0', '--timeout', '0', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 1500 },
+    const { status, stdout, sleeps } = await runOnFakeTime(
+      ['listen', '--from', 'n0', '--timeout', '0', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 8000 },
     );
-    assert.ok(at.length >= 3, `${at.length} requests: a batch with pings is followed up at once`);
-    assert.ok(at[2] - at[0] < 1000);
+    assert.equal(status, 1);
+    assert.equal(stdout.match(/\[R\] x/g).length, 2);
+    assert.equal(requests, 4, 'a batch with pings is followed up at once');
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS], 'only the empty round is paced');
   } finally {
     server.close();
   }

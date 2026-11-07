@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { run, runAsync, questionServer } from './helpers.mjs';
+import { run, runAsync, runOnFakeTime, questionServer } from './helpers.mjs';
+import { POLL_FLOOR_MS } from '../lib/util.js';
 
 test('approval requires a prompt and validates --ttl before the network', () => {
   const noPrompt = run(['approval', '--token', 'x'.repeat(40), '--room', 'ABC123']);
@@ -120,15 +121,14 @@ test('approval --wait re-polls a pending hold without hot-looping', async () => 
     'GET /api/agent/questions/q_p/wait': () => {
       waits += 1;
       // A server that answers `pending` instantly, ignoring the hold. Without
-      // the 1s floor this spins at full speed.
+      // the poll floor this spins at full speed.
       return waits < 3
         ? { status: 200, body: { id: 'q_p', state: 'pending' } }
         : { status: 200, body: { id: 'q_p', state: 'answered', answer: { value: 'approve' } } };
     },
   });
   try {
-    const started = Date.now();
-    const { status, timedOut } = await runAsync(
+    const { status, timedOut, sleeps } = await runOnFakeTime(
       ['approval', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--wait', '-p', 'Ship?'],
       {},
       { timeoutMs: 20000 },
@@ -136,7 +136,7 @@ test('approval --wait re-polls a pending hold without hot-looping', async () => 
     assert.equal(timedOut, false);
     assert.equal(status, 0);
     assert.equal(waits, 3);
-    assert.ok(Date.now() - started >= 2000, 'two pending rounds must cost at least the 1s floor each');
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS, POLL_FLOOR_MS], 'each pending round costs the full floor');
   } finally {
     server.close();
   }

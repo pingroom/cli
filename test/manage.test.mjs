@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CLI, baseEnv, run, runAsync, startServer, questionServer } from './helpers.mjs';
+import { COMMAND_HELP_SECTIONS, HELP_SHARED_COMMAND } from '../lib/help.js';
+import {
+  MANAGE_FLAGS, parseActionsArgs, parseApprovalArgs, parseAttachmentArgs, parseRoomsArgs, parseWebhooksArgs,
+} from '../lib/parser.js';
+import { CliExit } from '../lib/util.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Management nouns: rooms / webhooks / actions / approval / attachment.
@@ -210,7 +220,7 @@ test('rooms create refuses --description on a private room', () => {
 
 test('rooms create sends the public-room location trio together or not at all', async () => {
   const { server, baseUrl, received } = await questionServer({
-    'POST /api/agent/rooms/public': () => ({ body: { invite_code: 'ab12cd', name: 'Meetup' } }),
+    'POST /api/agent/rooms/public': () => ({ body: { id: 'room-1', invite_code: 'ab12cd', name: 'Meetup' } }),
   });
   try {
     const { status, stderr } = await runAsync([
@@ -416,5 +426,255 @@ test('webhooks --enabled reads true/false, 1/0 and yes/no in any case', async ()
     }
   } finally {
     server.close();
+  }
+});
+
+// --- a create that answers without what it exists to hand over -----------------
+
+test('rooms create and webhooks create fail on a 2xx that lacks the id or the trigger URL', async () => {
+  const bodies = { room: {}, webhook: {} };
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms': () => ({ status: 201, body: bodies.room }),
+    'POST /api/agent/rooms/ab12cd/webhooks': () => ({ status: 201, body: bodies.webhook }),
+  });
+  try {
+    const room = ['rooms', 'create', '-n', 'Deploys', '--icon', 'bell', '--color', '#e33122', '--token', 'tok', '--api', baseUrl];
+    const webhook = ['webhooks', 'create', '--room', 'ab12cd', '--name', 'CI', '--token', 'tok', '--api', baseUrl];
+
+    const noRoomId = await runAsync(room);
+    assert.equal(noRoomId.status, 1);
+    assert.equal(noRoomId.stdout, '');
+    assert.match(noRoomId.stderr, /rooms create returned no id/);
+
+    bodies.room = { id: 'room-1', invite_code: 'ab12cd', name: 'Deploys' };
+    const created = await runAsync(room);
+    assert.equal(created.status, 0, created.stderr);
+    assert.equal(created.stdout, 'created ab12cd Deploys\n');
+
+    const noWebhookId = await runAsync(webhook);
+    assert.equal(noWebhookId.status, 1);
+    assert.equal(noWebhookId.stdout, '');
+    assert.match(noWebhookId.stderr, /webhooks create returned no id/);
+
+    // The one command that must print the secret URL cannot exit 0 without it.
+    bodies.webhook = { id: 'wh-1', name: 'CI', enabled: true };
+    const noUrl = await runAsync(webhook);
+    assert.equal(noUrl.status, 1);
+    assert.equal(noUrl.stdout, '');
+    assert.match(noUrl.stderr, /webhooks create returned no trigger URL; webhook wh-1 may exist/);
+
+    bodies.webhook = { id: 'wh-1', webhook_url: 'https://api.example/api/webhooks/ab12cd/s3cr3t' };
+    const ok = await runAsync(webhook);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.stdout, 'created wh-1\nhttps://api.example/api/webhooks/ab12cd/s3cr3t\n');
+  } finally {
+    server.close();
+  }
+});
+
+// --- a sub-command takes only the flags it reads --------------------------------
+
+const TOKEN = 'x'.repeat(40);
+
+test('a management sub-command refuses a flag it never reads, instead of dropping it with exit 0', () => {
+  const room = ['--room', 'ab12cd'];
+  for (const [argv, expected] of [
+    // `--password` protects nothing on create; only `rooms join` sends it.
+    [['rooms', 'create', '-n', 'Deploys', '--icon', 'bell', '--color', '#e33122', '--password', 'pw'], /--password is only supported by rooms join/],
+    [['rooms', 'list', '--name', 'x'], /--name is only supported by rooms create/],
+    [['rooms', 'get', 'ab12cd', '--public'], /--public is only supported by rooms create/],
+    [['rooms', 'join', 'ab12cd', '--handle', 'h'], /--handle is only supported by rooms create/],
+    [['rooms', 'list', '--cooldown', '5'], /Unknown option: --cooldown/],
+    [['rooms', 'list', ...room], /--room is not supported here: a room is named by its invite code/],
+    [['webhooks', 'list', ...room, '--name', 'x'], /--name is only supported by webhooks create or webhooks update/],
+    [['webhooks', 'delete', 'wh-1', ...room, '--cooldown', '5'], /--cooldown is only supported by webhooks create or webhooks update/],
+    [['webhooks', 'create', ...room, '--name', 'x', '--label', 'y'], /Unknown option: --label/],
+    [['webhooks', 'create', ...room, '--name', 'x', '--wait'], /Unknown option: --wait/],
+    [['actions', 'list', ...room, '--sound', 'ting'], /--sound is only supported by actions set/],
+    [['actions', 'set', '1', ...room, '--label', 'a', '--icon', 'b', '--urgent'], /--urgent is only supported by actions trigger/],
+    [['actions', 'set', '1', ...room, '--label', 'a', '--icon', 'b', '--idempotency-key', 'k'], /--idempotency-key is only supported by actions trigger/],
+    [['actions', 'trigger', '1', ...room, '--label', 'x'], /--label is only supported by actions set/],
+    [['actions', 'trigger', '1', ...room, '--sound', 'ting'], /--sound is only supported by actions set/],
+    [['actions', 'set-all', ...room, '--set', '{}', '--require-ack'], /--require-ack is only supported by actions set or actions trigger/],
+    [['actions', 'layout', ...room, '--page-order', '1', '--set', '{}'], /--set is only supported by actions set-all/],
+    [['actions', 'list', ...room, '--name', 'x'], /Unknown option: --name/],
+    [['approval', '-p', 'Ship?', ...room, '--name', 'x'], /Unknown option: --name/],
+    [['approval', '-p', 'Ship?', ...room, '--url', 'https://example.com'], /Unknown option: --url/],
+    [['attachment', 'get', 'att-1', ...room], /--room is not supported here: an attachment id already names its attachment/],
+    [['attachment', 'delete', 'att-1', '--out', 'x'], /--out is only supported by attachment get/],
+    [['attachment', 'get', 'att-1', '--password', 'x'], /Unknown option: --password/],
+  ]) {
+    const { status, stderr } = run([...argv, '--token', TOKEN]);
+    assert.equal(status, 2, `${argv.join(' ')}: ${stderr}`);
+    assert.match(stderr, expected);
+  }
+});
+
+test('flags a sub-command does read are not refused', () => {
+  // Each reaches the credential check ("an agent token is required"), which runs
+  // after parsing, so a parse refusal would show as a different message.
+  const room = ['--room', 'ab12cd'];
+  for (const argv of [
+    ['rooms', 'create', '-n', 'Deploys', '--icon', 'bell', '--color', '#e33122'],
+    ['rooms', 'create', '-n', 'Meetup', '--icon', 'globe', '--color', '#0391fe', '--public', '--handle', 'meetup', '--description', 'd', '--location', '1,2', '--location-name', 'Mall'],
+    ['rooms', 'join', 'ab12cd', '--password', 'pw'],
+    ['webhooks', 'create', ...room, '-n', 'CI', '-t', 'T', '-m', 'M', '--icon', 'bell', '--color', '#e33122', '--sound', 'ting', '-a', '2', '--cooldown', '5', '--enabled', 'true'],
+    ['webhooks', 'update', 'wh-1', ...room, '--enabled', 'false'],
+    ['actions', 'set', '1', ...room, '--label', 'a', '--icon', 'b', '--sound', 'ting', '--require-ack', '--input-type', 'link'],
+    ['actions', 'set-all', ...room, '--set', '{}', '--set', '{}', '--actions', '[]'],
+    ['actions', 'trigger', '1', ...room, '--require-ack', '--urgent', '--ack-mode', 'all', '--idempotency-key', 'k', '--url', 'https://example.com', '--location', '1,2', '--location-label', 'a', '--location-address', 'b', '--attach', 'f.pdf', '--quick-action-id', 'x'],
+    ['actions', 'layout', ...room, '--page-order', '1,3'],
+    ['approval', '-p', 'Ship?', '-c', 'ctx', '--ttl', '60', '--idempotency-key', 'k', '--wait', '--timeout', '5', ...room],
+    ['attachment', 'get', 'att-1', '--out', 'x'],
+  ]) {
+    const { status, stderr } = run([...argv, '--api', 'https://api.example', '--json']);
+    assert.match(stderr, /an agent token is required/, `${argv.join(' ')}: ${stderr}`);
+    assert.equal(status, 2);
+  }
+});
+
+test('--help works on a sub-command whatever flags ride along', () => {
+  const { status, stdout } = run(['rooms', 'create', '--password', 'pw', '--help']);
+  assert.equal(status, 0);
+  assert.match(stdout, /rooms create -n <name>/);
+});
+
+// ---------------------------------------------------------------------------
+// The flags the README and --help show for these commands still parse.
+
+const MANAGE_NOUNS = {
+  rooms: parseRoomsArgs,
+  webhooks: parseWebhooksArgs,
+  actions: parseActionsArgs,
+  approval: parseApprovalArgs,
+  attachment: parseAttachmentArgs,
+};
+
+/** Run a parser the way main() does, keeping fail()'s stderr and exit code out of the runner. */
+function parseOutcome(parser, argv) {
+  const exitCode = process.exitCode;
+  const write = process.stderr.write;
+  let stderr = '';
+  process.stderr.write = (chunk) => { stderr += chunk; return true; };
+  try {
+    parser(argv);
+    return '';
+  } catch (error) {
+    if (!(error instanceof CliExit)) throw error;
+    return stderr.trim();
+  } finally {
+    process.stderr.write = write;
+    process.exitCode = exitCode;
+  }
+}
+
+/** Shell words of one command line: quotes group, `#` after a space starts a comment. */
+function shellWords(line) {
+  const words = [];
+  let word = null;
+  let quote = null;
+  for (const char of line) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else word += char;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      word ??= '';
+    } else if (/\s/.test(char)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else if (char === '#' && word === null) {
+      break;
+    } else {
+      word = (word ?? '') + char;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+test('every management command the README shows parses for its command', () => {
+  const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf8');
+  const fences = [...readme.matchAll(/^```[a-z]*\n([\s\S]*?)^```/gm)].map((match) => match[1]);
+  let checked = 0;
+  for (const block of fences) {
+    for (const line of block.replace(/\\\n\s*/g, ' ').split('\n')) {
+      const found = /\bpingroom (rooms|webhooks|actions|approval|attachment)\b(.*)$/.exec(line);
+      if (!found) continue;
+      const [, noun, rest] = found;
+      const argv = shellWords(rest);
+      checked += 1;
+      assert.equal(parseOutcome(MANAGE_NOUNS[noun], argv), '', `README: pingroom ${noun} ${rest.trim()}`);
+    }
+  }
+  assert.ok(checked >= 20, `only ${checked} README commands were checked`);
+});
+
+test('every flag --help shows for a management command is one its parser accepts', () => {
+  for (const [noun, parser] of Object.entries(MANAGE_NOUNS)) {
+    const text = `${COMMAND_HELP_SECTIONS[noun]}\n${HELP_SHARED_COMMAND}`;
+    const flags = [...text.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*|-[a-z])(?![\w-])/g)].map((match) => match[1]);
+    assert.ok(flags.length > 0, noun);
+    for (const flag of flags) {
+      // `-a`-style entries are the short spellings; `-h` and `--help` are shared.
+      assert.ok(parser.flags.has(flag), `pingroom ${noun} --help shows ${flag}, which its parser rejects`);
+    }
+  }
+});
+
+test('each noun\'s flag table and its per-sub-command lists describe the same flags', () => {
+  for (const [noun, bySubcommand] of Object.entries(MANAGE_FLAGS)) {
+    const owned = new Set(Object.values(bySubcommand).flat());
+    const shared = new Set(['token', 'api', 'json', 'help', 'room', 'expected_room_sha256']);
+    const accepted = new Set([...MANAGE_NOUNS[noun].keys].filter((key) => !shared.has(key)));
+    assert.deepEqual([...accepted].sort(), [...owned].sort(), `${noun}: a flag its parser takes belongs to no sub-command, or the reverse`);
+  }
+});
+
+// --- a dot-segment id cannot redirect the bearer to another route ---------------
+
+test('a "." or ".." id is a usage error before any request is sent', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const auth = ['--token', 'tok', '--api', baseUrl];
+    for (const id of ['..', '.']) {
+      for (const argv of [
+        ['rooms', 'get', id],
+        ['webhooks', 'list', '--room', id],
+        ['webhooks', 'delete', id, '--room', 'ab12cd'],
+        ['webhooks', 'update', id, '--room', 'ab12cd'],
+        ['actions', 'list', '--room', id],
+        ['approval', '-p', 'Ship?', '--room', id],
+        ['attachment', 'get', id, '--out', '-'],
+        ['attachment', 'delete', id],
+        ['ask', '-p', 'Ship?', '--room', id],
+        ['watch', id],
+        ['cancel', id],
+        ['ping', '-m', 'hi', '--room', id],
+        ['live', 'get', '-c', id, '--room', 'ab12cd'],
+        ['live', 'start', '-c', 'build', '--room', id],
+      ]) {
+        const { status, stderr } = await runAsync([...argv, ...auth], {}, { timeoutMs: 8000 });
+        assert.equal(status, 2, `${argv.join(' ')}: ${stderr}`);
+        assert.match(stderr, /may not be empty, "\." or "\.\."/, argv.join(' '));
+      }
+    }
+    // `run` takes its own options before the `--` that starts the child command.
+    const wrapped = await runAsync(['run', '--room', '..', ...auth, '--', 'true'], {}, { timeoutMs: 8000 });
+    assert.equal(wrapped.status, 2, wrapped.stderr);
+    assert.match(wrapped.stderr, /room may not be empty, "\." or "\.\."/);
+    assert.equal(received.length, 0, 'the bearer went nowhere');
+  } finally {
+    server.close();
+  }
+});
+
+// --- numeric flags read plain digits ------------------------------------------
+
+test('webhooks --cooldown "" is a usage error, not a request that clears the cooldown', () => {
+  for (const cooldown of ['', ' ']) {
+    const { status, stderr } = run(['webhooks', 'update', 'wh-1', '--cooldown', cooldown, '--room', 'ab12cd', '--token', TOKEN]);
+    assert.equal(status, 2);
+    assert.match(stderr, /--cooldown must be a number/);
   }
 });

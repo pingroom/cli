@@ -66,7 +66,7 @@ function runNode(home, args, { env = {}, timeoutMs = 8000 } = {}) {
     child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      resolve({ status, signal, stdout, stderr, timedOut, elapsedMs: Date.now() - startedAt });
+      resolve({ status, signal, stdout, stderr, timedOut, elapsedMs: Date.now() - startedAt, endedAt: Date.now() });
     });
     child.stdin.end();
   });
@@ -99,7 +99,7 @@ async function mockServer(t, handler) {
     let body = '';
     req.on('data', (data) => { body += data; });
     req.on('end', () => {
-      received.push({ method: req.method, path: req.url, auth: req.headers.authorization, body });
+      received.push({ method: req.method, path: req.url, auth: req.headers.authorization, body, at: Date.now() });
       handler(req, res, received.length);
     });
   });
@@ -376,10 +376,14 @@ test('an unresponsive issuer cannot indefinitely delay an ordinary CLI invocatio
   const home = newHome(t);
   const issuer = await mockServer(t, () => {});
   seed(home, issuer.url, [queued(issuer.url)]);
-  const result = await run(home, [], { timeoutMs: 5000 });
+  // The kill timeout only guards against a hang. The bound under test is how
+  // long the CLI stays on after the issuer has the request: that excludes
+  // process start-up, which is what a loaded machine stretches.
+  const result = await run(home, [], { timeoutMs: 20_000 });
   assertSucceeded(result);
-  assert.ok(result.elapsedMs < 4000, `recovery took ${result.elapsedMs}ms`);
   assert.equal(issuer.received.length, 1);
+  const stalled = result.endedAt - issuer.received[0].at;
+  assert.ok(stalled < 4000, `recovery kept waiting ${stalled}ms on an unresponsive issuer`);
   assert.equal(pending(home).length, 1);
   assert.equal(state(home).token, ACTIVE_TOKEN);
 });

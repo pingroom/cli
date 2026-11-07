@@ -46,6 +46,22 @@ test('exit 2: live rejects re-templating on update', () => {
   assert.match(stderr, /fixed at stream creation/);
 });
 
+// Number('') is 0, so an unset shell variable (`--progress "$PCT"`) used to send
+// progress 0 and exit 0.
+test('exit 2: live numeric flags refuse an empty or non-numeric value', () => {
+  for (const [flag, value] of [
+    ['--progress', ''], ['--progress', ' '], ['--progress', '50%'], ['--progress', '0x1'], ['--progress', '1e-1'],
+    ['--step', ''], ['--step', '1e1'], ['--step', '0x2'],
+    ['--deadline-at', ''], ['--deadline-at', ' '],
+    ['--eta-at', ''], ['--eta-at', '1.7e12'],
+    ['--duration-seconds', ''], ['--ack-timeout', ''],
+  ]) {
+    const { status, stderr } = run(['live', 'update', '-c', 'x', flag, value, '--token', 'x'.repeat(40), '--room', 'ab12cd']);
+    assert.equal(status, 2, `${flag} ${JSON.stringify(value)}: ${stderr}`);
+    assert.match(stderr, new RegExp(`${flag} must be a number`));
+  }
+});
+
 test('exit 2: live validates --progress bounds', () => {
   const { status, stderr } = run(['live', 'update', '-c', 'x', '--progress', '5']);
   assert.equal(status, 2);

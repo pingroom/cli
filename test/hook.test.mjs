@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { CLI, EMPTY_HOME, baseEnv, runAsync, questionServer, startServer, newHome, seedCredential } from './helpers.mjs';
+import { CLI, EMPTY_HOME, baseEnv, runAsync, runOnFakeTime, questionServer, startServer, newHome, seedCredential } from './helpers.mjs';
+import { POLL_FLOOR_MS } from '../lib/util.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -361,7 +362,7 @@ test('hook PreToolUse fails open to "ask" when the question expires', async () =
   }
 });
 
-test('hook PreToolUse re-polls a pending hold no faster than once a second', async () => {
+test('hook PreToolUse re-polls a pending hold no faster than the poll floor', async () => {
   // A server (or proxy) that answers `pending` at once, ignoring the hold. The
   // hook used to re-ask immediately: ~17k requests a second for up to the
   // 960 s hook timeout.
@@ -376,16 +377,39 @@ test('hook PreToolUse re-polls a pending hold no faster than once a second', asy
     },
   });
   try {
-    const started = Date.now();
     const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } };
-    const { status, stdout } = await runHook(
-      ['--api', baseUrl], event,
+    const { status, stdout, sleeps } = await runOnFakeTime(
+      ['hook', '--api', baseUrl],
       { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+      { stdin: JSON.stringify(event), timeoutMs: 20_000 },
     );
     assert.equal(status, 0);
     assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'allow');
     assert.equal(waits, 3);
-    assert.ok(Date.now() - started >= 2000, 'two pending rounds must cost at least the 1 s floor each');
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS, POLL_FLOOR_MS], 'each pending round costs the full floor');
+  } finally {
+    server.close();
+  }
+});
+
+test('hook fails open, with exit 0 and no request, when the room is a dot segment', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const env = { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: '..' };
+    const gate = await runHook(
+      ['--api', baseUrl],
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+      env,
+    );
+    assert.equal(gate.status, 0, gate.stderr);
+    const decision = JSON.parse(gate.stdout).hookSpecificOutput;
+    assert.equal(decision.permissionDecision, 'ask');
+    assert.match(decision.permissionDecisionReason, /room may not be empty, "\." or "\.\."/);
+
+    const notify = await runHook(['--api', baseUrl], { hook_event_name: 'Notification', message: 'Waiting' }, env);
+    assert.equal(notify.status, 0, notify.stderr);
+    assert.match(notify.stderr, /hook ping failed \(room may not be empty/);
+    assert.equal(received.length, 0, 'the bearer went nowhere');
   } finally {
     server.close();
   }

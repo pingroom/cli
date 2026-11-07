@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFileSync, rmSync } from 'node:fs';
 import {
-  run, runAsync, startServer, questionServer, newHome, seedCredential, activationEnsureResponse,
+  run, runAsync, runOnFakeTime, startServer, questionServer, newHome, seedCredential, activationEnsureResponse,
   confirmedActivationResponse, pairingServer, ACTIVE_PAIR,
 } from './helpers.mjs';
+import { POLL_FLOOR_MS } from '../lib/util.js';
 
 /**
  * Pair, then run `pingroom activate`, and return the activate result.
@@ -15,7 +16,7 @@ import {
  * explicit command. Pairing first is what gives `activate` the saved
  * QR credential (and the origin it is bound to) that it requires.
  */
-async function pairThenActivate(home, baseUrl, env = {}, opts = {}) {
+async function pairThenActivate(home, baseUrl, env = {}, opts = {}, runActivate = runAsync) {
   const paired = await runAsync(
     ['--api', baseUrl],
     { PINGROOM_HOME: home, PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test', COLUMNS: '120' },
@@ -23,7 +24,7 @@ async function pairThenActivate(home, baseUrl, env = {}, opts = {}) {
   );
   assert.equal(paired.status, 0, paired.stderr);
 
-  return runAsync(['activate', '--api', baseUrl], { PINGROOM_HOME: home, NODE_ENV: 'test', ...env }, opts);
+  return runActivate(['activate', '--api', baseUrl], { PINGROOM_HOME: home, NODE_ENV: 'test', ...env }, opts);
 }
 
 test('activate explains an all-rooms grant with no home room instead of blaming the pairing', () => {
@@ -321,7 +322,7 @@ test('activate honors Retry-After for ensure and wait 429s, then completes activ
     ],
   });
   try {
-    // Pair first (untimed), then measure only the activation round trip.
+    // Pair first, on the real clock, then run only the activation on virtual time.
     const paired = await runAsync(
       ['--api', baseUrl],
       { PINGROOM_HOME: home, PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test', COLUMNS: '120' },
@@ -329,26 +330,18 @@ test('activate honors Retry-After for ensure and wait 429s, then completes activ
     );
     assert.equal(paired.status, 0, paired.stderr);
 
-    const startedAt = Date.now();
-    const { status, stdout, stderr } = await runAsync(
+    const { status, stdout, stderr, sleeps } = await runOnFakeTime(
       ['activate', '--api', baseUrl],
       { PINGROOM_HOME: home, NODE_ENV: 'test' },
       { timeoutMs: 10_000 },
     );
     assert.equal(status, 0, stderr);
-    const elapsed = Date.now() - startedAt;
-    // 1 s for the floored Retry-After: 0, then 3 s for the wait's Retry-After.
-    assert.ok(elapsed >= 3_900, 'wait retries must honor Retry-After beyond the polling cadence');
-    assert.ok(elapsed < 5_500, 'Retry-After should not add the exponential fallback delay');
+    // Retry-After: 0 is floored at 1 s, never an immediate retry; the wait's
+    // Retry-After: 3 beats the polling cadence and adds no backoff on top.
+    assert.deepEqual(sleeps, [1_000, 3_000]);
     assert.match(stdout, /Agent Inbox is ready/);
-    const ensures = received.filter((r) => r.path === '/api/agent/inbox/ensure');
-    const waits = received.filter((r) => r.path === '/api/agent/handoffs/q-onboard/wait');
-    assert.equal(ensures.length, 2);
-    // Retry-After: 0 is floored at 1 s, never an immediate retry.
-    const ensureGap = ensures[1].at - ensures[0].at;
-    assert.ok(ensureGap >= 950 && ensureGap < 1_500, `ensure retried after ${ensureGap} ms`);
-    assert.equal(waits.length, 2);
-    assert.ok(waits[1].at - waits[0].at >= 2_900);
+    assert.equal(received.filter((r) => r.path === '/api/agent/inbox/ensure').length, 2);
+    assert.equal(received.filter((r) => r.path === '/api/agent/handoffs/q-onboard/wait').length, 2);
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
   } finally {
     server.close();
@@ -362,17 +355,22 @@ test('activate stops at the activation deadline without discarding credentials',
     waitResponses: [{ status: 200, body: { id: 'q-onboard', kind: 'question', state: 'pending' } }],
   });
   try {
-    const { status, stdout, stderr } = await pairThenActivate(
+    const { status, stdout, stderr, sleeps } = await pairThenActivate(
       home,
       baseUrl,
       { PINGROOM_INTERNAL_ACTIVATION_TIMEOUT_MS: '100' },
       { timeoutMs: 3000 },
+      runOnFakeTime,
     );
     assert.equal(status, 1, stderr);
     assert.match(stdout, /still waiting for the test answer/);
     assert.match(stdout, /connection is saved and usable/);
     assert.match(stdout, /Run "pingroom activate"/);
     assert.equal(received.filter((r) => r.path === '/api/agent/handoffs/q-onboard/wait').length, 1);
+    // The pending round would pause for the poll floor, but only 100 ms of the
+    // deadline is left, so it sleeps that and stops.
+    assert.ok(POLL_FLOOR_MS > 100);
+    assert.deepEqual(sleeps, [100]);
     assert.equal(JSON.parse(readFileSync(join(home, 'credentials.json'), 'utf8')).token, 'active_jwt');
   } finally {
     server.close();

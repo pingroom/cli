@@ -366,6 +366,16 @@ expiry yet). It never exits `0` without an answer. A wait whose API answers
 `200` without a `state` is an invalid response, not a pending one: it exits `1`
 at once (`invalid response while waiting for …`) instead of polling forever.
 
+The wait routes allow 30 requests a minute per account, shared by every waiter
+and listener on it, so a wait never starts a round less than 2.1 seconds after
+the previous one began, even when the server answers `pending` at once or
+`--timeout` is `0`. After a `429` it sleeps the response's `Retry-After`
+(clamped to 1–60 seconds) before asking again. `--timeout` is whole seconds as
+digits: an empty or non-numeric value, such as an unset shell variable in
+`--timeout "$T"`, exits `2` before anything is created. The numeric flags of
+`live` (`--progress`, `--step`, `--deadline-at`, `--eta-at`, `--duration-seconds`,
+`--ack-timeout`) and `webhooks --cooldown` read plain decimal text the same way.
+
 Options are `value:label` pairs (repeat `-o` for 2–4). Omit them for the binary
 Approve/Deny default — two options is the lock-screen fast path. `--ttl` sets the
 expiry in seconds (default 1h; 30–86400). `--scope room` lets any eligible member
@@ -598,7 +608,7 @@ stderr with the cause (`PingRoom unavailable (ECONNREFUSED); retrying`).
 API, so `--room` (and `listen OPS123`) is a usage error rather than a flag that
 is accepted and ignored — filter the output (`--json`, then `room.code`)
 instead. The same goes for `list`, `watch` and `cancel`. A round that ends
-early, such as `--timeout 0`, is padded to one request every 2 seconds: the feed
+early, such as `--timeout 0`, is padded to one request every 2.1 seconds: the feed
 route allows 30 requests a minute per account, shared by every listener on it.
 
 ## Bot mailbox
@@ -699,6 +709,15 @@ pingroom attachment delete <id>
 
 Creating webhooks and uploading attachments require a Pro account; public-room
 creation runs under its own consent scope (`pingroom:rooms:publish`).
+
+Each sub-command takes only the flags listed for it. A flag that belongs to a
+different sub-command (`rooms create --password`, `actions list --url`) or to a
+different command is a usage error (exit 2) instead of being accepted and
+dropped. `rooms` and `attachment` take no `--room`: a room is named by the invite
+code argument, an attachment by its id. A `rooms create` or `webhooks create`
+answer without the new id, or a `webhooks create` answer without the trigger URL,
+exits `1`. A room code, webhook id or attachment id of `.` or `..` is refused
+locally, before any request.
 
 On `webhooks create|update`, `--action` is a slot from 1 to 16, `--cooldown` is
 0–60 seconds, and `--enabled` is `true|false|1|0|yes|no` in any case; anything

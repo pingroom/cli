@@ -50,7 +50,7 @@ test('quick ping page slots reach ping, live, action, and webhook endpoints unch
     'POST /hook': () => ({ body: { success: true } }),
     'POST /api/agent/rooms/AB12/notifications': () => ({ body: { success: true } }),
     'POST /api/agent/rooms/AB12/live': () => ({ body: { state: 'running' } }),
-    'POST /api/agent/rooms/AB12/webhooks': () => ({ body: { id: 'hook' } }),
+    'POST /api/agent/rooms/AB12/webhooks': () => ({ body: { id: 'hook', webhook_url: 'https://api.example/api/webhooks/AB12/secret' } }),
     'PUT /api/agent/rooms/AB12/webhooks/hook': () => ({ body: { id: 'hook' } }),
   };
   for (const slot of slots) {

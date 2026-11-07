@@ -45,10 +45,11 @@ import { HELP } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
 import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
-  parseArgs, parseBotArgs, parseCancelArgs, parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs,
-  parseHookArgs, parseListArgs, parseListenArgs, parseLiveArgs, parseLogoutArgs, parseManageArgs,
-  parsePairArgs, parseQArgs, parseReconnectArgs, parseRedeemArgs, parseRunArgs, parseSkillsArgs,
-  parseUpdateArgs, parseWatchArgs,
+  parseActionsArgs, parseApprovalArgs, parseArgs, parseAttachmentArgs, parseBotArgs, parseCancelArgs,
+  parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs, parseListArgs,
+  parseListenArgs, parseLiveArgs, parseLogoutArgs, parsePairArgs, parseQArgs, parseReconnectArgs,
+  parseRedeemArgs, parseRoomsArgs, parseRunArgs, parseSkillsArgs, parseUpdateArgs, parseWatchArgs,
+  parseWebhooksArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
 import { bot } from '../lib/commands/bot.js';
@@ -85,11 +86,11 @@ const COMMANDS = {
   redeem: (rest) => redeem(parseRedeemArgs(rest)),
   activate: (rest) => activateStoredInbox(parseQArgs(rest)),
   live: (rest) => live(parseLiveArgs(rest)),
-  rooms: (rest) => rooms(parseManageArgs(rest)),
-  webhooks: (rest) => webhooks(parseManageArgs(rest)),
-  actions: (rest) => actions(parseManageArgs(rest)),
-  approval: (rest) => approval(parseManageArgs(rest)),
-  attachment: (rest) => attachment(parseManageArgs(rest)),
+  rooms: (rest) => rooms(parseRoomsArgs(rest)),
+  webhooks: (rest) => webhooks(parseWebhooksArgs(rest)),
+  actions: (rest) => actions(parseActionsArgs(rest)),
+  approval: (rest) => approval(parseApprovalArgs(rest)),
+  attachment: (rest) => attachment(parseAttachmentArgs(rest)),
   config: (rest) => config(parseConfigArgs(rest)),
   reconnect: (rest) => reconnect(parseReconnectArgs(rest)),
   pair: (rest) => pair(parsePairArgs(rest)),
@@ -139,7 +140,9 @@ async function main() {
     return exitAfterOutput(bareCode);
   }
 
-  const handler = COMMANDS[command];
+  // Object.hasOwn, not COMMANDS[command]: a bare lookup walks the prototype
+  // chain, so `pingroom constructor` found a handler and died in it.
+  const handler = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   if (!handler) {
     fail(`unknown command: ${command}\nRun "pingroom --help".`, EXIT.USAGE);
   }
