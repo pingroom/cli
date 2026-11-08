@@ -130,6 +130,7 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Ask and wait for a decision | `ask`, `approval`, `watch`, `list`, `cancel` | [Questions](#ask-a-human-questions) |
 | Reach your human directly | `handoff`, `handoffs` | [Handoffs](#handoffs-agent--human) |
 | Show live progress | `live start`, `update`, `end`, `get` | [Live Activities](#live-activities-pingroom-live) |
+| Ask who's on a task and take it | `live start --template claim`, `live claim` | [Who's on it?](#whos-on-it-pingroom-live-claim) |
 | Receive pings | `listen` | [Hearing replies](#hearing-replies) |
 | Run a Grok Bot routine | `bot claim`, `ack`, `extend`, `done`, `peek` | [Bot mailbox](#bot-mailbox) |
 | Manage your setup | `rooms`, `webhooks`, `actions`, `attachment` | [Management](#managing-rooms-webhooks-and-quick-actions) |
@@ -487,13 +488,14 @@ a full inline card in the app). `start` opens it with one alert, `update` moves
 it **silently**, `end` closes it with one completion alert.
 
 ```
-pingroom live <start|update|end|get> [options]
+pingroom live <start|update|end|get|claim> [options]
 
-  -c, --correlation-id <id>  The stream key — reuse it for every ping (required)
+  -c, --correlation-id <id>  The stream key — reuse it for every ping (required,
+                             except for claim)
       --template <name>      start only: status | steps | progress | metrics |
-                             countdown | decision | matchup (fixed at creation;
-                             'decision' is the app's name for the wire id
-                             'question', which is still accepted)
+                             countdown | decision | matchup | claim (fixed at
+                             creation; 'decision' is the app's name for the wire
+                             id 'question', which is still accepted)
       --steps <a,b,c>        start only: 2-8 comma-separated step labels
   -m, --message <text>       The card's live message line
       --progress <0..1>      Progress bar / Dynamic Island gauge
@@ -512,7 +514,9 @@ pingroom live <start|update|end|get> [options]
       --accent-override <#rrggbb>  Semantic accent for this frame
       --failed               end only: finish as failed instead of done
   -d, --data <json>          Structured data object carried on this frame
-  -t, --title <text>         Card title (<= 40 chars)
+  -t, --title <text>         Card title (<= 40 chars; the request text, <= 120,
+                             for --template claim)
+  -n, --notification-id <id> claim only: the request's notification id
   -a, --action <1-16>         Quick-action slot supplying the icon and sound
       --require-ack          Add an Acknowledge button
       --ack-timeout <s>      Ack deadline in seconds
@@ -533,7 +537,7 @@ pingroom live update -c deploy-42 --step 2 -m "Deploying to prod"
 pingroom live end    -c deploy-42 -m "Shipped 1.4.0"     # add --failed to fail it
 ```
 
-All 7 templates are expressible:
+All 8 templates are expressible:
 
 ```bash
 # question — up to 4 options. A bare token is both value and label.
@@ -549,7 +553,45 @@ pingroom live start -c host-1 --template metrics --metric "CPU:45%" --metric "RP
 
 # countdown — a large live timer.
 pingroom live start -c win-9 --template countdown --deadline-at 1750003600
+
+# claim — "Who's on it?". The title is the request (up to 120 characters).
+pingroom live start -c milk-1 --template claim -t "Buy milk" \
+  --deadline-at "$(( $(date +%s) + 3600 ))"
 ```
+
+### Who's on it? (`pingroom live claim`)
+
+A **claim request** asks a private room "who's on it?" and lets one member take
+it. `live start --template claim` creates it and prints a `notification_id`.
+Public and personal rooms refuse it (`claim_private_rooms_only`). The request
+text is `-t` (1 to 120 characters; `-m` is used when there is no title). The
+optional `--deadline-at` must be in the future and at most 8 hours away.
+
+```bash
+pingroom live claim              -n "$NOTIFICATION_ID" --room ab12cd   # take it
+pingroom live claim release      -n "$NOTIFICATION_ID" --room ab12cd   # let go
+pingroom live claim done         -n "$NOTIFICATION_ID" --room ab12cd   # finished
+pingroom live claim cancel       -n "$NOTIFICATION_ID" --room ab12cd   # withdraw
+```
+
+`live claim [claim|release|done|cancel]` acts as the human the token belongs to
+and needs only room membership plus the `pingroom:live:write` scope. The action
+defaults to `claim`. Anyone but the asker may claim an open request. The claimer
+may release it. The claimer, or the asker at any time, may finish it. The asker,
+or a room owner or admin, may cancel it. The asker is whoever started the
+stream, which for an agent token is the human it acts for.
+
+Exit `0` means the action applied, or repeated your own last action
+(`(no change)`). Exit `1` is a refusal with the server's message: `claim_conflict`
+(someone else holds it, or it ended), `claim_own_request`, `claim_not_found` or
+`forbidden`. Two claims at once have one winner.
+
+A webhook has no member to act as, so `live claim` needs a token and rejects
+`--webhook` with exit `2`. A webhook ends its own request with `live end`
+(done) or `live end --failed` (cancelled). `live update` on a claim request
+changes nothing. An open request expires at its deadline, or after 4 hours
+without one. A claimed request stays live past its deadline, marked late, and
+ends as unfinished at 7 h 55 m.
 
 `--accent-override` takes `#rrggbb` **or** a bare `rrggbb` (case-insensitive;
 it is normalized to lowercase with the `#` before it is sent). Pass it bare, or

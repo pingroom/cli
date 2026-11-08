@@ -8,7 +8,7 @@ test('exit 0: live --help prints the live section (previously exit 2)', () => {
   for (const argv of [['live', '--help'], ['live', '-h'], ['live', 'start', '-h']]) {
     const { status, stdout, stderr } = run(argv);
     assert.equal(status, 0, stderr);
-    assert.match(stdout, /^live <start\|update\|end\|get> options/);
+    assert.match(stdout, /^live <start\|update\|end\|get\|claim> options/);
     assert.doesNotMatch(stdout, /hook options/);
   }
 });
@@ -287,7 +287,7 @@ test('exit 2: live rejects an unknown --template', () => {
 });
 
 test('live accepts every documented template name', () => {
-  for (const name of ['status', 'steps', 'progress', 'metrics', 'countdown', 'question', 'matchup']) {
+  for (const name of ['status', 'steps', 'progress', 'metrics', 'countdown', 'question', 'matchup', 'claim']) {
     // No transport configured, so a valid template must fall through to the
     // "provide a webhook or a token" usage error, never to a --template one.
     const { stderr } = run(['live', 'start', '-c', 'x', '--template', name]);
@@ -397,4 +397,141 @@ test('live refuses a --action that is not a slot from 1 to 16, and sends a valid
   } finally {
     server.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// live claim — "Who's on it?"
+// ---------------------------------------------------------------------------
+
+const NOTIFICATION_ID = '0198f3c2-6f0e-7d3a-9a55-3b1c2d4e5f60';
+
+test('live start --template claim sends the request as a 120-character title and prints the notification id', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push({ url: req.url, body });
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state: 'started' }));
+    });
+  });
+  try {
+    const request = 'Buy milk and eggs on the way home. '.repeat(3).slice(0, 110);
+    const { status, stdout } = await runAsync([
+      'live', 'start', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl,
+      '-c', 'milk-1', '--template', 'claim', '-t', request, '--deadline-at', '1794148500',
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /live start → started/);
+    assert.match(stdout, new RegExp(`notification_id: ${NOTIFICATION_ID}`));
+    assert.deepEqual(JSON.parse(received[0].body), {
+      correlation_id: 'milk-1',
+      live_status: { state: 'running', template: 'claim', deadline_at: 1794148500 },
+      title: request,
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('exit 2: a title over 40 characters is still refused for every template but claim, and over 120 for claim', () => {
+  const long = 'x'.repeat(41);
+  let result = run(['live', 'start', '-c', 'x', '-t', long]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--title must be at most 40 characters/);
+  result = run(['live', 'start', '-c', 'x', '--template', 'claim', '-t', 'x'.repeat(121)]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--title must be at most 120 characters/);
+});
+
+test('live claim posts the action to the transition route and prints who holds it', async () => {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state: 'running', idempotent: false,
+        claim: { status: 'claimed', by: { id: 'u1', name: 'Alex' }, at: 1794146700, late: false },
+      }));
+    });
+  });
+  try {
+    // The action defaults to claim.
+    let result = await runAsync([
+      'live', 'claim', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-n', NOTIFICATION_ID,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /live claim claim → claimed by Alex ✅/);
+    result = await runAsync([
+      'live', 'claim', 'release', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '--notification-id', NOTIFICATION_ID,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(received.length, 2);
+    for (const call of received) {
+      assert.equal(call.method, 'POST');
+      assert.equal(call.url, `/api/agent/rooms/ab12cd/live/${NOTIFICATION_ID}/claim`);
+      assert.equal(call.auth, 'Bearer tok');
+    }
+    assert.deepEqual(received.map((call) => JSON.parse(call.body)), [{ action: 'claim' }, { action: 'release' }]);
+  } finally {
+    server.close();
+  }
+});
+
+test('live claim exits 1 with the server message when someone got it first', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    res.writeHead(409, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      code: 'claim_conflict', message: 'Sam is already on it.', state: 'running',
+      claim: { status: 'claimed', by: { id: 'u2', name: 'Sam' }, at: 1794146700, late: false },
+    }));
+  });
+  try {
+    const { status, stderr } = await runAsync([
+      'live', 'claim', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-n', NOTIFICATION_ID,
+    ]);
+    assert.equal(status, 1);
+    assert.match(stderr, /live claim claim failed: Sam is already on it\./);
+  } finally {
+    server.close();
+  }
+});
+
+test('live claim marks a repeated action as no change', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state: 'running', idempotent: true,
+      claim: { status: 'claimed', by: { id: 'u1', name: 'Alex' }, at: 1794146700, late: false },
+    }));
+  });
+  try {
+    const { status, stdout } = await runAsync([
+      'live', 'claim', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-n', NOTIFICATION_ID,
+    ]);
+    assert.equal(status, 0);
+    assert.match(stdout, /\(no change\)/);
+  } finally {
+    server.close();
+  }
+});
+
+test('exit 2: live claim usage errors', () => {
+  const base = ['--token', 'x'.repeat(40), '--room', 'ab12cd'];
+  let result = run(['live', 'claim', 'grab', '-n', NOTIFICATION_ID, ...base]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /live claim takes an action: claim \| release \| done \| cancel/);
+  result = run(['live', 'claim', ...base]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--notification-id is required/);
+  result = run(['live', 'claim', '-n', NOTIFICATION_ID, '--room', 'ab12cd']);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /requires an agent token/);
+  result = run(['live', 'claim', '-n', NOTIFICATION_ID, '--webhook', 'http://127.0.0.1:1/hook']);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /webhook has no member to act as/);
 });
