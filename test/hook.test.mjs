@@ -392,6 +392,62 @@ test('hook PreToolUse re-polls a pending hold no faster than the poll floor', as
   }
 });
 
+test('hook paces mixed failures and pending responses while retaining longer Retry-After', async () => {
+  for (const [failureStatus, retryAfter, retryDelay] of [[503, undefined, POLL_FLOOR_MS], [429, '7', 7000]]) {
+    let waits = 0;
+    const { server, baseUrl } = await questionServer({
+      'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_mixed', state: 'pending' } }),
+      'GET /api/agent/questions/q_mixed/wait': () => {
+        waits += 1;
+        if (waits === 5) return { status: 200, body: { id: 'q_mixed', state: 'answered', answer: { value: 'allow' } } };
+        return waits % 2 === 1
+          ? { status: failureStatus, body: { message: 'Synthetic failure' }, headers: retryAfter === undefined ? {} : { 'Retry-After': retryAfter } }
+          : { status: 200, body: { id: 'q_mixed', state: 'pending' } };
+      },
+    });
+    try {
+      const { status, stdout, sleeps } = await runOnFakeTime(
+        ['hook', '--api', baseUrl],
+        { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+        { stdin: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), timeoutMs: 10000 },
+      );
+      assert.equal(status, 0);
+      assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'allow');
+      assert.equal(waits, 5);
+      assert.deepEqual(sleeps, [retryDelay, POLL_FLOOR_MS, retryDelay, POLL_FLOOR_MS]);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('hook stops at its deadline without an early retry and withdraws the question', async () => {
+  const { HOOK_EXPIRY_GRACE_MS } = await import('../lib/commands/hook.js');
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: {
+      id: 'q_short', state: 'pending', expires_at: new Date(Date.now() - HOOK_EXPIRY_GRACE_MS + 1000).toISOString(),
+    } }),
+    'GET /api/agent/questions/q_short/wait': () => ({ status: 503, body: { message: 'Synthetic failure' } }),
+    'POST /api/agent/questions/q_short/cancel': () => ({ status: 200, body: { state: 'cancelled' } }),
+  });
+  try {
+    const { status, stdout, sleeps } = await runOnFakeTime(
+      ['hook', '--api', baseUrl],
+      { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+      { stdin: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), timeoutMs: 10000 },
+    );
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(received.filter((request) => request.method === 'GET').length, 1);
+    assert.equal(received.filter((request) => request.path.endsWith('/cancel')).length, 1);
+    assert.equal(received.at(-1).path, '/api/agent/questions/q_short/cancel');
+    assert.equal(sleeps.length, 1);
+    assert.ok(sleeps[0] > 0 && sleeps[0] < POLL_FLOOR_MS, 'wait only the remaining deadline without making another request');
+  } finally {
+    server.close();
+  }
+});
+
 test('hook fails open, with exit 0 and no request, when the room is a dot segment', async () => {
   const { server, baseUrl, received } = await questionServer({});
   try {
@@ -653,7 +709,7 @@ test('hook cancels its phone question before deferring a wait that stays down pa
     assert.match(out.permissionDecisionReason, /PingRoom unavailable \(Unavailable\)/);
     assert.equal(cancels.length, 1, 'the question is withdrawn once the bound is reached');
     assert.equal(received.at(-1).path, '/api/agent/questions/q_blip/cancel');
-    // It retried (1 s, then 2 s backoff, clamped to the bound) instead of giving up at once.
+    // It retries after the floor, then reaches the bound without an early retry.
     assert.ok(waits.length >= 2 && waits.length <= 4, `${waits.length} wait requests`);
     assert.ok(elapsed >= 2200 && elapsed < 9000, `gave up after ${elapsed} ms`);
   } finally { server.close(); }

@@ -367,10 +367,14 @@ expiry yet). It never exits `0` without an answer. A wait whose API answers
 at once (`invalid response while waiting for …`) instead of polling forever.
 
 The wait routes allow 30 requests a minute per account, shared by every waiter
-and listener on it, so a wait never starts a round less than 2.1 seconds after
-the previous one began, even when the server answers `pending` at once or
-`--timeout` is `0`. After a `429` it sleeps the response's `Retry-After`
-(clamped to 1–60 seconds) before asking again. `--timeout` is whole seconds as
+and listener on it. Unanswered decision polls and empty steady-state feed polls
+are spaced at least 2.1 seconds from the previous actual request's start,
+including transient retries, even when the server answers at once or `--timeout`
+is `0`. Concurrent waiters, the initial feed handshake and immediate draining
+of nonempty feed batches can still exceed the shared quota. After a `429` the
+response's `Retry-After` (clamped to 1–60 seconds) is also a minimum delay. If
+the outage bound arrives before a retry is allowed, the wait stops at that
+bound without another request. `--timeout` is whole seconds as
 digits: an empty or non-numeric value, such as an unset shell variable in
 `--timeout "$T"`, exits `2` before anything is created. The numeric flags of
 `live` (`--progress`, `--step`, `--deadline-at`, `--eta-at`, `--duration-seconds`,
@@ -607,9 +611,11 @@ stderr with the cause (`PingRoom unavailable (ECONNREFUSED); retrying`).
 `listen` hears every room the connection covers. There is no room filter in the
 API, so `--room` (and `listen OPS123`) is a usage error rather than a flag that
 is accepted and ignored — filter the output (`--json`, then `room.code`)
-instead. The same goes for `list`, `watch` and `cancel`. A round that ends
-early, such as `--timeout 0`, is padded to one request every 2.1 seconds: the feed
-route allows 30 requests a minute per account, shared by every listener on it.
+instead. The same goes for `list`, `watch` and `cancel`. After an empty feed
+response, such as `--timeout 0`, or a transient failure, the next request waits
+until at least 2.1 seconds after the previous request started. The initial cursor
+handshake and draining nonempty batches remain immediate. This per-listener
+pacing does not reserve capacity in the shared 30-requests-a-minute quota.
 
 ## Bot mailbox
 

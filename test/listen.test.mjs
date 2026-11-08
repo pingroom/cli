@@ -115,7 +115,7 @@ test('listen refuses out-of-range holds locally, and needs a token', async () =>
   assert.match(noToken.stderr, /agent token is required/);
 });
 
-test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () => {
+test('listen keeps the request floor after a 429 that says Retry-After: 0', async () => {
   let requests = 0;
   const { server, baseUrl } = await startServer((req, res) => {
     requests += 1;
@@ -136,7 +136,7 @@ test('listen waits at least 1 s after a 429 that says Retry-After: 0', async () 
     assert.equal(status, 0);
     assert.match(stdout, /\[R\] hi/);
     assert.equal(requests, 2);
-    assert.deepEqual(sleeps, [1000], 'Retry-After: 0 is floored at 1 s, never an immediate retry');
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS], 'a short Retry-After cannot skip the request floor');
   } finally {
     server.close();
   }
@@ -221,7 +221,7 @@ test('listen retries a 503 on its very first request instead of exiting 1', asyn
     assert.equal(status, 0, stderr);
     assert.match(stdout, /\[R\] hello/);
     assert.deepEqual(requests, [null, null, 'n1']);
-    assert.deepEqual(sleeps, [1000], 'it backs off for the server\'s Retry-After before retrying');
+    assert.deepEqual(sleeps, [POLL_FLOOR_MS], 'a short Retry-After cannot skip the request floor');
     assert.equal(stderr, '', 'one blip is not worth a warning');
   } finally {
     server.close();
@@ -262,6 +262,32 @@ test('listen --timeout 0 paces its rounds instead of hot-looping the shared feed
     assert.deepEqual(sleeps, [POLL_FLOOR_MS, POLL_FLOOR_MS, POLL_FLOOR_MS]);
   } finally {
     server.close();
+  }
+});
+
+test('listen paces mixed failures and empty responses from each actual request', async () => {
+  for (const [failureStatus, retryAfter, retryDelay] of [[503, undefined, POLL_FLOOR_MS], [429, '7', 7000]]) {
+    let requests = 0;
+    const { server, baseUrl } = await startServer((req, res) => {
+      requests += 1;
+      const failure = requests % 2 === 1 && requests < 5;
+      const status = requests === 5 ? 401 : failure ? failureStatus : 200;
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        ...(failure && retryAfter !== undefined ? { 'Retry-After': retryAfter } : {}),
+      });
+      res.end(JSON.stringify(status === 200 ? { notifications: [], cursor: 'n1' } : { message: 'Synthetic failure' }));
+    });
+    try {
+      const { status, sleeps } = await runOnFakeTime(
+        ['listen', '--from', 'n1', '--timeout', '0', '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 8000 },
+      );
+      assert.equal(status, 1, 'the fifth response ends the synthetic run');
+      assert.equal(requests, 5);
+      assert.deepEqual(sleeps, [retryDelay, POLL_FLOOR_MS, retryDelay, POLL_FLOOR_MS]);
+    } finally {
+      server.close();
+    }
   }
 });
 

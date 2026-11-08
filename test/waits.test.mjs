@@ -153,8 +153,9 @@ test('with no known expiry, an unbroken outage is bounded too', async () => {
       (error) => error instanceof CliExit && error.code === 1,
     );
     assert.match(stderr, /PingRoom unavailable since \S+ \(HTTP 503\); stopped waiting for question q_1/);
-    // t=0 and t=1 s back off; the third attempt lands on the 1.5 s bound.
-    assert.equal(polls, 3);
+    // The outage ends before another request is allowed. Stop at its bound
+    // without shortening the 2.1 s floor to squeeze in a final retry.
+    assert.equal(polls, 1);
   } finally {
     process.stderr.write = write;
     process.exitCode = exitCode;
@@ -302,9 +303,93 @@ test('every blocking wait paces a pending round at the poll floor', async () => 
   }
 });
 
+test('alternating failures and pending responses pace each actual decision request', async () => {
+  for (const [name, wait] of Object.entries(WAIT_COMMANDS)) {
+    let polls = 0;
+    const { server, baseUrl } = await questionServer(wait.routes(() => {
+      polls += 1;
+      if (polls === 5) return { status: 200, body: wait.done };
+      return polls % 2 === 1
+        ? { status: 503, body: { message: 'Try again' } }
+        : { status: 200, body: wait.pending };
+    }));
+    try {
+      const { status, stderr, sleeps } = await runOnFakeTime(
+        [...wait.argv, '--token', 'tok', '--api', baseUrl], {}, { timeoutMs: 10_000 },
+      );
+      assert.equal(status, 0, `${name}: ${stderr}`);
+      assert.equal(polls, 5, name);
+      assert.deepEqual(sleeps, Array(4).fill(POLL_FLOOR_MS), `${name}: retry and pending boundaries both respect the floor`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('slow decision responses count toward pacing without adding a second full floor', async (t) => {
+  const { waitForResolution } = await import('../lib/question-wait.js');
+  let now = 0;
+  const starts = [];
+  const sleeps = [];
+  const replies = [
+    [503, { message: 'Try again' }, 3000],
+    [200, { id: 'q_slow', state: 'pending' }, 3000],
+    [503, { message: 'Try again' }, 0],
+    [200, { id: 'q_slow', state: 'pending' }, 0],
+    [200, { id: 'q_slow', state: 'answered', answer: { value: 'ship' } }, 0],
+  ];
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    sleeps.push(delay);
+    now += delay;
+    queueMicrotask(() => callback(...args));
+    return {};
+  });
+  t.mock.method(globalThis, 'fetch', async () => {
+    starts.push(now);
+    const [status, body, elapsed] = replies.shift();
+    now += elapsed;
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  });
+  const status = await waitForResolution('q_slow', {}, { token: 'synthetic', apiBase: 'http://127.0.0.1:9' }, { print: () => {} });
+  assert.equal(status, 0);
+  assert.deepEqual(starts, [0, 4000, 7000, 9100, 11200]);
+  assert.deepEqual(sleeps, [1000, POLL_FLOOR_MS, POLL_FLOOR_MS]);
+});
+
+test('decision retries keep longer backoff and stop at a bound that cannot fit it', async (t) => {
+  const { pollDecision } = await import('../lib/http.js');
+  const { CliExit } = await import('../lib/util.js');
+  let now = 0;
+  const starts = [];
+  const sleeps = [];
+  const oldExitCode = process.exitCode;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(process.stderr, 'write', () => true);
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    sleeps.push(delay);
+    now += delay;
+    queueMicrotask(() => callback(...args));
+    return {};
+  });
+  t.mock.method(globalThis, 'fetch', async () => {
+    starts.push(now);
+    return new Response('{"message":"Try again"}', { status: 503, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    await assert.rejects(pollDecision('http://127.0.0.1:9/decision', 'synthetic', { maxOutageMs: 9000 }),
+      (error) => error instanceof CliExit && error.code === 1);
+    assert.deepEqual(starts, [0, 2100, 4200, 8200]);
+    assert.deepEqual(sleeps, [2100, 2100, 4000, 800]);
+    assert.equal(now, 9000, 'the remaining outage time is waited without an early final request');
+  } finally {
+    process.exitCode = oldExitCode;
+  }
+});
+
 test('a wait that is rate limited sleeps the Retry-After it was given, then carries on', async () => {
   for (const [name, wait] of Object.entries(WAIT_COMMANDS)) {
-    for (const [header, expected] of [['7', 7000], ['0', 1000], [undefined, 1000]]) {
+    for (const [header, expected] of [['7', 7000], ['0', POLL_FLOOR_MS], [undefined, POLL_FLOOR_MS]]) {
       let polls = 0;
       const { server, baseUrl } = await questionServer(wait.routes(() => {
         polls += 1;
@@ -319,7 +404,7 @@ test('a wait that is rate limited sleeps the Retry-After it was given, then carr
         const label = `${name} with Retry-After ${header}`;
         assert.equal(status, 0, `${label}: ${stderr}`);
         assert.equal(polls, 2, label);
-        // Retry-After is honoured, floored at 1 s; with none, the first backoff step.
+        // Longer Retry-After wins; a short retry still respects the request floor.
         assert.deepEqual(sleeps, [expected], label);
         assert.doesNotMatch(stderr, /unavailable/, 'one 429 is not worth a warning');
       } finally {
