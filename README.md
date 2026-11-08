@@ -499,9 +499,10 @@ pingroom live <start|update|end|get> [options]
       --progress <0..1>      Progress bar / Dynamic Island gauge
       --step <n>             Current step index (steps template)
       --metric <label:value> Repeatable, up to 3 (metrics template)
-      --deadline-at <epoch>  Countdown target (countdown template)
-      --duration-seconds <n> Original countdown length; read on the first
-                             ping only (default: deadline minus now)
+      --deadline-at <epoch>  Countdown target (countdown template). A later
+                             update may move it; the length moves with it
+      --duration-seconds <n> Countdown length; read on the first ping only
+                             (default: deadline minus now)
       --eta-at <epoch>       Live ETA (status/progress templates)
       --prompt <text>        The ask (decision template)
       --option <value:label> Repeatable, up to 4 (decision template)
@@ -567,9 +568,12 @@ or quota-blocked, precisely so a card can't be metered into hanging open on
 someone's Lock Screen. Abandoned streams are swept after ~15 minutes.
 
 `--template` and `--steps` are fixed when the stream is created; passing them to
-`update`/`end` is a usage error rather than a silent no-op. `pingroom live get`
-(agent token only) reads a stream back — every stored field — so a restarted
-producer reconciles instead of opening a duplicate.
+`update`/`end` is a usage error rather than a silent no-op. A countdown can be
+moved later with `--deadline-at`: send the new absolute epoch, and the original
+length moves by the same amount, so a 30-minute timer pushed five minutes later
+reads 35:00. `--duration-seconds` is read on `start` only.
+`pingroom live get` (agent token only) reads a stream back — every stored field —
+so a restarted producer reconciles instead of opening a duplicate.
 
 Full protocol: <https://pingroom.io/liveactivities.md>
 
