@@ -221,7 +221,7 @@ pingroom ping [options]
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
-      --idempotency-key <k>  Dedupe key; identical requests replay the first ping (requires --token)
+      --idempotency-key <k>  Dedupe key; identical requests replay the first ping
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
                          applies only when neither --token nor --room is given;
                          --webhook with either is a usage error)
@@ -390,9 +390,12 @@ ASCII characters. Spaces are allowed, and surrounding whitespace is trimmed as
 the server does; anything else, such as an emoji or Cyrillic, exits `2` before
 sending. Retrying the same key with the same request returns the original
 Question; reusing it with a changed request returns `409 idempotency_conflict`.
-`approval`, `handoff`, `actions trigger` and `ping` take the same rule. `ping`
-needs an agent token: a webhook ping has no replay guard, so
-`--idempotency-key` with `--webhook` exits `2`. `live` takes no key.
+`approval`, `handoff`, `actions trigger` and `ping` take the same rule, and a
+webhook ping (`--webhook`) sends the same header: the incoming-webhook route
+replays a completed same-key request for an hour and answers `409
+idempotency_conflict` for a changed payload or `409 idempotency_in_progress`
+while the first request is still running (retry with the same key). Both exit
+`1`. `live` takes no key.
 
 `--attach` uploads each file again on every invocation, creating new attachment
 IDs. Even with the same paths, a retry of `ping --attach` or `actions trigger

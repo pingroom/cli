@@ -942,22 +942,65 @@ test('--idempotency-key rides the Idempotency-Key header of an agent ping, never
   }
 });
 
-test('--idempotency-key is refused before any request when invalid or on a webhook ping', async () => {
+test('--idempotency-key is refused before any request when invalid', async () => {
   const { server, baseUrl, received } = await transportServer();
   try {
     for (const key of ['', '   ', 'deploy-✅', 'x'.repeat(256)]) {
-      const { status, stderr } = await runAsync([
-        'ping', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl, '-m', 'hi', '--idempotency-key', key,
-      ]);
-      assert.equal(status, 2, JSON.stringify(key));
-      assert.match(stderr, /--idempotency-key must be 1–255 printable ASCII/);
+      for (const transport of [
+        ['--token', 'tok', '--room', 'ab12cd', '--api', baseUrl],
+        ['--webhook', `${baseUrl}/webhooks/room/HOOKSECRET`],
+      ]) {
+        const { status, stderr } = await runAsync(['ping', ...transport, '-m', 'hi', '--idempotency-key', key]);
+        assert.equal(status, 2, `${transport[0]} ${JSON.stringify(key)}`);
+        assert.match(stderr, /--idempotency-key must be 1–255 printable ASCII/);
+      }
     }
-    const webhook = await runAsync([
-      'ping', '--webhook', `${baseUrl}/webhooks/room/HOOKSECRET`, '-m', 'hi', '--idempotency-key', 'evt-42:1',
-    ]);
-    assert.equal(webhook.status, 2);
-    assert.match(webhook.stderr, /--idempotency-key needs an agent token/);
     assert.equal(received.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('--idempotency-key rides the Idempotency-Key header of a webhook ping, trimmed, never the body', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  try {
+    const { status, stderr } = await runAsync([
+      'ping', '--webhook', `${baseUrl}/webhooks/room/HOOKSECRET`, '-m', 'hi', '--idempotency-key', '  evt-42:1 ',
+    ]);
+    assert.equal(status, 0, stderr);
+    assert.equal(received.length, 1);
+    assert.equal(received[0].idempotency, 'evt-42:1');
+    assert.deepEqual(JSON.parse(received[0].body), { message: 'hi' });
+    const without = await runAsync(['ping', '--webhook', `${baseUrl}/webhooks/room/HOOKSECRET`, '-m', 'hi']);
+    assert.equal(without.status, 0, without.stderr);
+    assert.equal(received[1].idempotency, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test('a webhook ping answers an idempotency conflict and an in-flight first request with exit 1 and the server wording', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /webhooks/room/CONFLICT': () => ({
+      status: 409,
+      body: { code: 'idempotency_conflict', message: 'This Idempotency-Key was already used with a different request payload.' },
+    }),
+    'POST /webhooks/room/BUSY': () => ({
+      status: 409,
+      headers: { 'Retry-After': '1' },
+      body: { success: false, error: 'idempotency_in_progress', message: 'A request with this Idempotency-Key is still being processed.' },
+    }),
+  });
+  try {
+    const conflict = await runAsync(['ping', '--webhook', `${baseUrl}/webhooks/room/CONFLICT`, '-m', 'hi', '--idempotency-key', 'k1']);
+    assert.equal(conflict.status, 1);
+    assert.match(conflict.stderr, /delivery failed: This Idempotency-Key was already used with a different request payload/);
+    assert.doesNotMatch(conflict.stderr, /ping sent/);
+    const busy = await runAsync(['ping', '--webhook', `${baseUrl}/webhooks/room/BUSY`, '-m', 'hi', '--idempotency-key', 'k1']);
+    assert.equal(busy.status, 1);
+    assert.match(busy.stderr, /still being processed/);
+    assert.match(busy.stderr, /Retry with the same --idempotency-key/);
+    assert.equal(received.length, 2);
   } finally {
     server.close();
   }

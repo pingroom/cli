@@ -326,6 +326,26 @@ function runActionScript(env) {
   });
 }
 
+test('the Action hands a ping its idempotency-key on either transport', async () => {
+  const { server, baseUrl, received } = await transportServer();
+  const webhook = `${baseUrl}/webhooks/room/HOOKSECRET`;
+  try {
+    for (const [inputs, label] of [
+      [{ PINGROOM_WEBHOOK_URL: webhook }, 'webhook'],
+      [{ PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' }, 'token'],
+    ]) {
+      const before = received.length;
+      const { status, stderr } = await runActionScript({
+        PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', PR_IDEMPOTENCY_KEY: 'deploy-77', ...inputs,
+      });
+      assert.equal(status, 0, `${label}: ${stderr}`);
+      assert.deepEqual(received.slice(before).map((r) => r.idempotency), ['deploy-77'], label);
+    }
+  } finally {
+    server.close();
+  }
+});
+
 test('the Action keeps webhook-url ahead of token and room for a ping, so a pin bump changes no transport', async () => {
   // 0.13.0 pinged the webhook whenever one was set. From 0.14.0 an explicit
   // --room selects the token path, so the Action must hand the ping neither.

@@ -71,7 +71,7 @@ inputs:
     description: 'For a handoff: "active" (default) or "passive".'
     required: false
   idempotency-key:
-    description: 'For a handoff: dedupe key sent as Idempotency-Key; retries reuse it.'
+    description: 'For a handoff or a ping (token or webhook-url): dedupe key sent as Idempotency-Key; retries reuse it. 1-255 printable ASCII.'
     required: false
   correlation-id:
     description: 'For a handoff: opaque id echoed on every read.'
@@ -257,4 +257,5 @@ runs:
         [ "$PR_REQUIRE_ACK" = "true" ] && args+=(--require-ack)
         [ -n "$PR_ACK_MODE" ] && args+=(--ack-mode "$PR_ACK_MODE")
         [ -n "$PR_ACK_TIMEOUT" ] && args+=(--ack-timeout "$PR_ACK_TIMEOUT")
+        [ -n "$PR_IDEMPOTENCY_KEY" ] && args+=(--idempotency-key "$PR_IDEMPOTENCY_KEY")
         $CLI "${args[@]}"
