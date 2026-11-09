@@ -568,21 +568,26 @@ text is `-t` (1 to 120 characters; `-m` is used when there is no title). The
 optional `--deadline-at` must be in the future and at most 8 hours away.
 
 ```bash
-pingroom live claim              -n "$NOTIFICATION_ID" --room ab12cd   # take it
-pingroom live claim release      -n "$NOTIFICATION_ID" --room ab12cd   # let go
-pingroom live claim done         -n "$NOTIFICATION_ID" --room ab12cd   # finished
-pingroom live claim cancel       -n "$NOTIFICATION_ID" --room ab12cd   # withdraw
+# ASKER_TOKEN acts for the room owner; MEMBER_TOKEN for another room member.
+pingroom live start --token "$ASKER_TOKEN" --room ab12cd \
+  -c milk-1 --template claim -t "Buy milk"
+# Set NOTIFICATION_ID to the id printed above; the other member takes it.
+pingroom live claim --token "$MEMBER_TOKEN" --room ab12cd -n "$NOTIFICATION_ID"
+pingroom live claim done --token "$MEMBER_TOKEN" --room ab12cd -n "$NOTIFICATION_ID"
 ```
 
 `live claim [claim|release|done|cancel]` acts as the human the token belongs to
 and needs only room membership plus the `pingroom:live:write` scope. The action
 defaults to `claim`. Anyone but the asker may claim an open request. The claimer
 may release it. The claimer, or the asker at any time, may finish it. The asker,
-or a room owner or admin, may cancel it. The asker is whoever started the
-stream, which for an agent token is the human it acts for.
+or a room owner or admin, may cancel it. The asker is the member who started
+the stream, or the room owner when an agent or webhook started it.
 
-Exit `0` means the action applied, or repeated your own last action
-(`(no change)`). Exit `1` is a refusal with the server's message: `claim_conflict`
+Exit `0` requires a receipt matching the notification and requested action,
+including a repeated action (`(no change)`). An unusable success response exits
+`1` without printing a success receipt. The action may have completed; inspect
+the request before retrying. The CLI sends one POST and never retries it.
+Exit `1` also reports refusals with the server's message: `claim_conflict`
 (someone else holds it, or it ended), `claim_own_request`, `claim_not_found` or
 `forbidden`. Two claims at once have one winner.
 
@@ -592,6 +597,10 @@ A webhook has no member to act as, so `live claim` needs a token and rejects
 changes nothing. An open request expires at its deadline, or after 4 hours
 without one. A claimed request stays live past its deadline, marked late, and
 ends as unfinished at 7 h 55 m.
+
+`live claim` accepts only the action, notification id, token, room, API URL and
+output/help flags. Stream flags such as `--failed` and `--correlation-id` are
+usage errors before a request. `--notification-id` is only for `live claim`.
 
 `--accent-override` takes `#rrggbb` **or** a bare `rrggbb` (case-insensitive;
 it is normalized to lowercase with the `#` before it is sent). Pass it bare, or

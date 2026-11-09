@@ -452,10 +452,11 @@ test('live claim posts the action to the transition route and prints who holds i
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       received.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
+      const released = JSON.parse(body).action === 'release';
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state: 'running', idempotent: false,
-        claim: { status: 'claimed', by: { id: 'u1', name: 'Alex' }, at: 1794146700, late: false },
+        claim: { status: released ? 'open' : 'claimed', by: released ? null : { id: 'u1', name: 'Alex' }, at: released ? null : 1794146700, late: false },
       }));
     });
   });
@@ -534,4 +535,128 @@ test('exit 2: live claim usage errors', () => {
   result = run(['live', 'claim', '-n', NOTIFICATION_ID, '--webhook', 'http://127.0.0.1:1/hook']);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /webhook has no member to act as/);
+});
+
+function claimReceipt(action = 'claim', idempotent = false) {
+  const [status, state] = { claim: ['claimed', 'running'], release: ['open', 'running'], done: ['done', 'done'], cancel: ['cancelled', 'failed'] }[action];
+  return {
+    notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state, idempotent,
+    claim: { status, by: action === 'release' ? null : { id: 'member-1', name: 'Alex', image_url: null }, at: action === 'release' ? null : 1794146700, late: false },
+  };
+}
+
+test('live claim accepts each documented transition and idempotent receipt, including nullable actor metadata', async () => {
+  let receipt;
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      received.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(receipt));
+    });
+  });
+  try {
+    for (const action of ['claim', 'release', 'done', 'cancel']) {
+      for (const idempotent of [false, true]) {
+        receipt = claimReceipt(action, idempotent);
+        // Finishing an open request does not imply anyone previously took it.
+        if (action === 'done') receipt.claim.at = null;
+        if (action === 'cancel') receipt.claim.by = null;
+        const before = received.length;
+        const result = await runAsync(['live', 'claim', action, '-n', NOTIFICATION_ID.toUpperCase(), '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl, '--json']);
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout), receipt);
+        assert.equal(received.length, before + 1);
+        assert.deepEqual(received.at(-1), { action });
+      }
+    }
+  } finally { server.close(); }
+});
+
+test('live claim rejects unusable success receipts without printing success or repeating the POST', async () => {
+  const changed = (mutate) => { const receipt = claimReceipt('done'); mutate(receipt); return receipt; };
+  const invalid = [
+    {}, null, [],
+    changed((r) => { r.notification_id = 'other-notification'; }),
+    changed((r) => { delete r.notification_id; }),
+    changed((r) => { r.correlation_id = ''; }),
+    changed((r) => { r.idempotent = 'false'; }),
+    changed((r) => { delete r.idempotent; }),
+    changed((r) => { r.state = 'running'; }),
+    changed((r) => { r.claim = null; }),
+    changed((r) => { r.claim.status = 'claimed'; r.state = 'running'; }),
+    changed((r) => { r.claim.status = 'expired'; r.state = 'failed'; }),
+    changed((r) => { r.claim.by = []; }),
+    changed((r) => { r.claim.by.id = ''; }),
+    changed((r) => { r.claim.by.name = 42; }),
+    changed((r) => { r.claim.at = '1794146700'; }),
+    changed((r) => { delete r.claim.at; }),
+    changed((r) => { r.claim.late = 'false'; }),
+  ];
+  let receipt;
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    requests += 1;
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(receipt));
+    });
+  });
+  try {
+    for (const candidate of invalid) for (const json of [false, true]) {
+      receipt = candidate;
+      const before = requests;
+      const result = await runAsync(['live', 'claim', 'done', '-n', NOTIFICATION_ID, '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl, ...(json ? ['--json'] : [])]);
+      assert.equal(result.status, 1, JSON.stringify(candidate));
+      assert.equal(result.stdout, '', 'no receipt or success mark may escape validation');
+      assert.match(result.stderr, /invalid receipt; the action may have completed/);
+      assert.equal(requests, before + 1, 'an uncertain action must not be retried automatically');
+    }
+  } finally { server.close(); }
+});
+
+test('live claim preserves refusal JSON and exits nonzero without retrying', async () => {
+  const receipt = { code: 'claim_conflict', message: 'Sam got it first.', claim: { status: 'claimed', by: { id: 'member-2', name: 'Sam' } }, state: 'running' };
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    requests += 1;
+    res.writeHead(409, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(receipt));
+  });
+  try {
+    const result = await runAsync(['live', 'claim', '-n', NOTIFICATION_ID, '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl, '--json']);
+    assert.equal(result.status, 1);
+    assert.deepEqual(JSON.parse(result.stdout), receipt);
+    assert.match(result.stderr, /Sam got it first/);
+    assert.equal(requests, 1);
+  } finally { server.close(); }
+});
+
+test('live claim refuses unread stream flags and other live commands refuse notification-id before any request', async () => {
+  const { server, baseUrl, received } = await questionServer({});
+  try {
+    const common = ['--token', 'synthetic', '--room', 'ab12cd', '--api', baseUrl];
+    for (const flag of [
+      ['--failed'], ['--correlation-id', 'milk-1'], ['--title', 'x'], ['--message', 'x'], ['--template', 'claim'],
+      ['--category', 'status'], ['--progress', '0.5'], ['--step', '1'], ['--steps', 'a,b'], ['--metric', 'a:1'],
+      ['--deadline-at', '1794146700'], ['--duration-seconds', '60'], ['--eta-at', '1794146700'], ['--prompt', 'x'],
+      ['--option', 'a:A'], ['--left', 'a'], ['--right', 'b'], ['--center', 'c'], ['--accent-override', '123456'],
+      ['--action', '1'], ['--data', '{}'], ['--require-ack'], ['--ack-timeout', '60'],
+    ]) {
+      const result = await runAsync(['live', 'claim', '-n', NOTIFICATION_ID, ...common, ...flag]);
+      assert.equal(result.status, 2, `${flag[0]}: ${result.stderr}`);
+      assert.match(result.stderr, new RegExp(`${flag[0]} is not supported by live claim`));
+    }
+    for (const sub of ['start', 'update', 'end', 'get']) for (const flag of ['--notification-id', '-n']) {
+      const result = await runAsync(['live', sub, '-c', 'milk-1', flag, NOTIFICATION_ID, ...common]);
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, /--notification-id is only supported by live claim/);
+    }
+    assert.equal(received.length, 0);
+    const help = await runAsync(['live', 'claim', '--failed', '--help']);
+    assert.equal(help.status, 0, help.stderr);
+  } finally { server.close(); }
 });
