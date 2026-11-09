@@ -672,9 +672,12 @@ test('a "." or ".." id is a usage error before any request is sent', async () =>
 // --- numeric flags read plain digits ------------------------------------------
 
 test('webhooks --cooldown "" is a usage error, not a request that clears the cooldown', () => {
-  for (const cooldown of ['', ' ']) {
+  for (const cooldown of ['', ' ', '0x10', 'NaN']) {
     const { status, stderr } = run(['webhooks', 'update', 'wh-1', '--cooldown', cooldown, '--room', 'ab12cd', '--token', TOKEN]);
-    assert.equal(status, 2);
+    assert.equal(status, 2, JSON.stringify(cooldown));
     assert.match(stderr, /--cooldown must be a number/);
   }
+  const negative = run(['webhooks', 'update', 'wh-1', '--cooldown', '-1', '--room', 'ab12cd', '--token', TOKEN]);
+  assert.equal(negative.status, 2);
+  assert.match(negative.stderr, /--cooldown must be at least 0/);
 });
