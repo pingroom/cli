@@ -193,8 +193,8 @@ test('every flag the GitHub Action passes is one the CLI parser accepts', () => 
   //
   // Both sides are derived — flags from action.yml, vocabulary from the parser
   // tables — so a newly forwarded flag is covered without editing this test.
-  // The pin/version equality asserted above is what carries this check from
-  // this tree onto the release the Action actually invokes.
+  // Parser acceptance alone cannot prove that the published CLI supports a
+  // transport/flag combination. CI also runs the shell tests against that pin.
   const parserFor = parserByCommand();
   const byCommand = actionFlagsByCommand();
 
@@ -293,8 +293,8 @@ test('split_options strips trailing newlines before choosing a separator', () =>
 
 /**
  * Run the Action's `run:` script under bash the way a composite step does
- * (`bash --noprofile --norc -eo pipefail`), with the npx pin swapped for this
- * tree's CLI. `env` carries the step's inputs.
+ * (`bash --noprofile --norc -eo pipefail`). CI supplies the installed, published
+ * Action pin; local runs default to this tree's CLI. `env` carries step inputs.
  */
 function runActionScript(env) {
   const action = readAction();
@@ -308,7 +308,12 @@ function runActionScript(env) {
   assert.match(script, pin, 'the Action must still invoke the pinned CLI through $CLI');
   const dir = mkdtempSync(join(tmpdir(), 'pingroom-action-'));
   const wrapper = join(dir, 'pingroom');
-  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
+  const actionCli = process.env.PINGROOM_ACTION_TEST_CLI || CLI;
+  if (process.env.PINGROOM_ACTION_TEST_CLI) {
+    const published = JSON.parse(readFileSync(join(dirname(actionCli), '..', 'package.json'), 'utf8'));
+    assert.equal(`@pingroom/cli@${published.version}`, action.match(/@pingroom\/cli@\d+\.\d+\.\d+/)?.[0]);
+  }
+  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${actionCli}" "$@"\n`);
   chmodSync(wrapper, 0o755);
   const step = join(dir, 'step.sh');
   writeFileSync(step, script.replace(pin, `CLI="${wrapper}"`));
@@ -326,21 +331,28 @@ function runActionScript(env) {
   });
 }
 
-test('the Action hands a ping its idempotency-key on either transport', async () => {
+test('the Action passes token ping keys and rejects unsupported webhook keys before sending', async () => {
   const { server, baseUrl, received } = await transportServer();
   const webhook = `${baseUrl}/webhooks/room/HOOKSECRET`;
   try {
-    for (const [inputs, label] of [
-      [{ PINGROOM_WEBHOOK_URL: webhook }, 'webhook'],
-      [{ PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' }, 'token'],
+    for (const inputs of [
+      { PINGROOM_WEBHOOK_URL: webhook },
+      { PINGROOM_WEBHOOK_URL: webhook, PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' },
     ]) {
       const before = received.length;
       const { status, stderr } = await runActionScript({
         PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', PR_IDEMPOTENCY_KEY: 'deploy-77', ...inputs,
       });
-      assert.equal(status, 0, `${label}: ${stderr}`);
-      assert.deepEqual(received.slice(before).map((r) => r.idempotency), ['deploy-77'], label);
+      assert.equal(status, 2, stderr);
+      assert.match(stderr, /unavailable in the Action pinned to CLI 0\.15\.1/);
+      assert.equal(received.length, before);
     }
+    const { status, stderr } = await runActionScript({
+      PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', PR_IDEMPOTENCY_KEY: 'deploy-77',
+      PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd',
+    });
+    assert.equal(status, 0, stderr);
+    assert.deepEqual(received.map((r) => r.idempotency), ['deploy-77']);
   } finally {
     server.close();
   }

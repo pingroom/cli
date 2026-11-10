@@ -20,8 +20,10 @@ jobs:
       - name: Verify the Action matches the published CLI release
         run: |
           node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
+          import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
           import { execFileSync } from 'node:child_process';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
           const pin = readFileSync('action.yml', 'utf8').match(/@pingroom\/cli@\d+\.\d+\.\d+/)?.[0];
           if (!pin) throw new Error('Action must pin a concrete CLI release');
           const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
@@ -29,6 +31,10 @@ jobs:
             throw new Error(`Publish CLI ${version}, then update the Action pin to match`);
           }
           execFileSync('npm', ['view', pin, 'version'], { stdio: 'inherit' });
+          const directory = mkdtempSync(join(tmpdir(), 'pingroom-action-cli-'));
+          execFileSync('npm', ['install', '--prefix', directory, '--ignore-scripts', '--no-audit', '--no-fund', pin], { stdio: 'inherit' });
+          const cli = join(directory, 'node_modules', '@pingroom', 'cli', 'bin', 'pingroom.js');
+          appendFileSync(process.env.GITHUB_ENV, `PINGROOM_ACTION_TEST_CLI=${cli}\n`);
           NODE
       # The script leaves its glob unquoted so the shell expands it: Node 20
       # treats a quoted glob literally.
