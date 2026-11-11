@@ -560,9 +560,10 @@ pingroom live <start|update|end|get|claim> [options]
   -c, --correlation-id <id>  The stream key — reuse it for every ping (required,
                              except for claim)
       --template <name>      start only: status | steps | progress | metrics |
-                             countdown | decision | matchup | claim (fixed at
-                             creation; 'decision' is the app's name for the wire
-                             id 'question', which is still accepted)
+                             countdown | decision | matchup | claim | timer |
+                             value | stats (fixed at creation; 'decision' is the
+                             app's name for the wire id 'question', which is
+                             still accepted)
       --steps <a,b,c>        start only: 2-8 comma-separated step labels
   -m, --message <text>       The card's live message line
       --progress <0..1>      Progress bar / Dynamic Island gauge
@@ -573,6 +574,20 @@ pingroom live <start|update|end|get|claim> [options]
       --duration-seconds <n> Countdown length; read on the first ping only
                              (default: deadline minus now)
       --eta-at <epoch>       Live ETA (status/progress templates)
+      --segments <2-20>      start only: draw the progress bar in this many
+                             equal segments (progress template)
+      --segment <n>          Segments done, 0..--segments (progress template).
+                             With --progress omitted the server derives it
+      --started-at <epoch>   start only: the clock a timer counts up from
+                             (default: now; timer template)
+      --value <text>         The one prominent value, <= 24 (value template;
+                             required on start)
+      --value-label <text>   What the value is, <= 24 (value template)
+      --delta <text>         The change, such as +3.2%, <= 12 (value template)
+      --trend <up|down|flat> Which way the delta moved (value template)
+      --stat <Label=Value>   Repeatable, 4 to 8 pairs, each part <= 24 (stats
+                             template; required on start; a later update that
+                             passes any replaces the whole list)
       --prompt <text>        The ask (decision template)
       --option <value:label> Repeatable, up to 4 (decision template)
       --left <label:value>   Left side (matchup template)
@@ -606,7 +621,7 @@ pingroom live update -c deploy-42 --step 2 -m "Deploying to prod"
 pingroom live end    -c deploy-42 -m "Shipped 1.4.0"     # add --failed to fail it
 ```
 
-All 8 templates are expressible:
+All 11 templates are expressible:
 
 ```bash
 # question — up to 4 options. A bare token is both value and label.
@@ -626,7 +641,28 @@ pingroom live start -c win-9 --template countdown --deadline-at 1750003600
 # claim — "Who's on it?". The title is the request (up to 120 characters).
 pingroom live start -c milk-1 --template claim -t "Buy milk" \
   --deadline-at "$(( $(date +%s) + 3600 ))"
+
+# timer — a clock counting UP from --started-at (default: now). The phone keeps
+# it ticking, so there are no per-second pushes; update at least every 15
+# minutes or the stream is ended as stale. `live end` freezes the elapsed time.
+pingroom live start -c build-9 --template timer -t "Build" --started-at "$(date +%s)"
+
+# value — one prominent value (required) with an optional label, delta, trend.
+pingroom live start -c mrr-1 --template value -t "Revenue" \
+  --value '$12.4k' --value-label MRR --delta "+3.2%" --trend up
+
+# stats — 4 to 8 pairs, drawn as two rows of the metrics cells (required).
+pingroom live start -c health-2 --template stats -t "Prod health" \
+  --stat "RPS=1.2k" --stat "p99=180ms" --stat "5xx=0.1%" --stat "CPU=45%"
+
+# progress in equal segments; the server derives the bar from --segment.
+pingroom live start  -c migrate-5 --template progress -t "Migration" --segments 5 --segment 0
+pingroom live update -c migrate-5 --segment 2
 ```
+
+An app that predates a template shows the status layout: your title and message.
+For `value` and `stats` the server writes the message when you send none, so an
+older app still reads well; the current app draws the values themselves.
 
 ### Who's on it? (`pingroom live claim`)
 

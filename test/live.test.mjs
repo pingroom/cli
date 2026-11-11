@@ -287,7 +287,7 @@ test('exit 2: live rejects an unknown --template', () => {
 });
 
 test('live accepts every documented template name', () => {
-  for (const name of ['status', 'steps', 'progress', 'metrics', 'countdown', 'question', 'matchup', 'claim']) {
+  for (const name of ['status', 'steps', 'progress', 'metrics', 'countdown', 'question', 'matchup', 'claim', 'timer', 'value', 'stats']) {
     // No transport configured, so a valid template must fall through to the
     // "provide a webhook or a token" usage error, never to a --template one.
     const { stderr } = run(['live', 'start', '-c', 'x', '--template', name]);
@@ -766,4 +766,136 @@ test('live claim refuses unread stream flags and other live commands refuse noti
     const help = await runAsync(['live', 'claim', '--failed', '--help']);
     assert.equal(help.status, 0, help.stderr);
   } finally { server.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// live — timer, value, stats and segmented progress
+// ---------------------------------------------------------------------------
+
+async function startedBody(argv) {
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      received.push(JSON.parse(body));
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ state: 'started' }));
+    });
+  });
+  try {
+    const result = await runAsync(['live', ...argv, '--token', 't', '--room', 'r', '--api', baseUrl]);
+    return { ...result, received };
+  } finally {
+    server.close();
+  }
+}
+
+test('live start expresses the timer template via --started-at', async () => {
+  const { status, received } = await startedBody([
+    'start', '-c', 'build-9', '--template', 'timer', '--started-at', '1794146700', '-t', 'Build',
+  ]);
+  assert.equal(status, 0);
+  assert.deepEqual(received[0], {
+    correlation_id: 'build-9',
+    title: 'Build',
+    live_status: { state: 'running', template: 'timer', started_at: 1794146700 },
+  });
+});
+
+test('live start leaves started_at to the server when --started-at is omitted', async () => {
+  const { status, received } = await startedBody(['start', '-c', 'build-9', '--template', 'timer']);
+  assert.equal(status, 0);
+  assert.deepEqual(received[0].live_status, { state: 'running', template: 'timer' });
+});
+
+test('live start expresses the value template, and a delta may start with a minus sign', async () => {
+  const { status, received } = await startedBody([
+    'start', '-c', 'mrr-1', '--template', 'value', '--value', '$12.4k', '--value-label', 'MRR',
+    '--delta', '-3.2%', '--trend', 'down',
+  ]);
+  assert.equal(status, 0);
+  assert.deepEqual(received[0].live_status, {
+    state: 'running', template: 'value', value: '$12.4k', value_label: 'MRR', delta: '-3.2%', trend: 'down',
+  });
+});
+
+test('live update moves the value without re-templating', async () => {
+  const { status, received } = await startedBody(['update', '-c', 'mrr-1', '--value', '$12.9k', '--trend', 'flat']);
+  assert.equal(status, 0);
+  assert.deepEqual(received[0].live_status, { state: 'running', value: '$12.9k', trend: 'flat' });
+});
+
+test('live start expresses the stats template via repeatable --stat Label=Value', async () => {
+  const { status, received } = await startedBody([
+    'start', '-c', 'health-2', '--template', 'stats',
+    '--stat', 'RPS=1.2k', '--stat', 'p99=180ms', '--stat', '5xx=0.1%', '--stat', 'Mode=a=b',
+  ]);
+  assert.equal(status, 0);
+  assert.deepEqual(received[0].live_status, {
+    state: 'running',
+    template: 'stats',
+    stats: [
+      { label: 'RPS', value: '1.2k' },
+      { label: 'p99', value: '180ms' },
+      { label: '5xx', value: '0.1%' },
+      // Only the first "=" splits.
+      { label: 'Mode', value: 'a=b' },
+    ],
+  });
+});
+
+test('live update may re-send --stat with new labels', async () => {
+  const { status, received } = await startedBody([
+    'update', '-c', 'health-2', '--stat', 'A=1', '--stat', 'B=2', '--stat', 'C=3', '--stat', 'D=4', '--stat', 'E=5',
+  ]);
+  assert.equal(status, 0);
+  assert.equal(received[0].live_status.stats.length, 5);
+});
+
+test('live start draws progress in segments; --segment moves on an update', async () => {
+  const started = await startedBody([
+    'start', '-c', 'migrate-5', '--template', 'progress', '--segments', '5', '--segment', '0',
+  ]);
+  assert.equal(started.status, 0);
+  assert.deepEqual(started.received[0].live_status, {
+    state: 'running', template: 'progress', segments: 5, current_segment: 0,
+  });
+  const updated = await startedBody(['update', '-c', 'migrate-5', '--segment', '2']);
+  assert.equal(updated.status, 0);
+  assert.deepEqual(updated.received[0].live_status, { state: 'running', current_segment: 2 });
+});
+
+test('exit 2: live rejects malformed stats, trends and segment counts before sending', async () => {
+  const stat = (n) => Array.from({ length: n }, (_, i) => ['--stat', `L${i}=${i}`]).flat();
+  const bad = [
+    [['--trend', 'sideways'], /--trend must be one of: up, down, flat/],
+    [[...stat(3)], /--stat needs between 4 and 8/],
+    [[...stat(9)], /--stat needs between 4 and 8/],
+    [[...stat(3), '--stat', 'nolabel'], /--stat must be "Label=Value" \(got "nolabel"\)/],
+    [[...stat(3), '--stat', '=5'], /--stat must be "Label=Value"/],
+    [[...stat(3), '--stat', 'NoEquals'], /--stat must be "Label=Value"/],
+    [['--segments', '1'], /--segments must be at least 2/],
+    [['--segments', '21'], /--segments must be at most 20/],
+    [['--segments', '2.5'], /--segments must be an integer/],
+    [['--segment', '-1'], /--segment must be at least 0/],
+    [['--segments', '3', '--segment', '4'], /--segment must be at most --segments \(3\)/],
+    [['--started-at', 'yesterday'], /--started-at must be a number/],
+    [['--started-at', '1.5'], /--started-at must be an integer/],
+  ];
+  for (const [extra, pattern] of bad) {
+    const { status, stderr } = await runAsync([
+      'live', 'start', '--token', 't', '--room', 'r', '--api', 'https://example.com', '-c', 'c1', ...extra,
+    ]);
+    assert.equal(status, 2, `${extra.join(' ')}: ${stderr}`);
+    assert.match(stderr, pattern);
+  }
+});
+
+test('exit 2: --segments and --started-at are fixed at stream creation', () => {
+  for (const extra of [['--segments', '5'], ['--started-at', '1794146700']]) {
+    const { status, stderr } = run(['live', 'update', '-c', 'x', ...extra]);
+    assert.equal(status, 2, extra.join(' '));
+    assert.match(stderr, /--segments and --started-at are fixed at stream creation/);
+  }
 });
