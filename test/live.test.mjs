@@ -575,6 +575,113 @@ test('live claim accepts each documented transition and idempotent receipt, incl
   } finally { server.close(); }
 });
 
+// What the server answers when a claimer lets go of a request past its deadline
+// (Claim::decide): a 200, claim.status "expired", stream state "failed", nobody
+// holding it, and the request ended by the person who let go. A retry by the
+// same person replays it with idempotent: true.
+function expiredReleaseReceipt(idempotent = false) {
+  return {
+    notification_id: NOTIFICATION_ID, correlation_id: 'milk-1', state: 'failed', idempotent,
+    claim: { status: 'expired', by: null, at: null, late: false, realerted_at: 1794146000, ended_by: 'member-1' },
+  };
+}
+
+test('live claim release after the deadline accepts the expired receipt and says the request had already expired', async () => {
+  let receipt;
+  const received = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      received.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(receipt));
+    });
+  });
+  try {
+    const argv = ['live', 'claim', 'release', '-n', NOTIFICATION_ID, '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl];
+
+    receipt = expiredReleaseReceipt(false);
+    let result = await runAsync(argv);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.match(result.stdout, /^live claim release → expired ✅$/m);
+    assert.match(result.stdout, /This request had already expired \(past its deadline or time limit\), so letting go ended it instead of reopening it\./);
+    assert.doesNotMatch(result.stdout, /no change/);
+    assert.deepEqual(received, [{ action: 'release' }], 'one POST, never retried');
+
+    // The same person repeating it replays the ended request.
+    receipt = expiredReleaseReceipt(true);
+    result = await runAsync(argv);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^live claim release → expired \(no change\) ✅$/m);
+    assert.match(result.stdout, /had already expired/);
+    assert.equal(received.length, 2);
+
+    // --json stays the server's body and nothing else.
+    result = await runAsync([...argv, '--json']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), receipt);
+  } finally { server.close(); }
+});
+
+test('live claim release that reopens the request does not claim it had expired', async () => {
+  const { server, baseUrl } = await startServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(claimReceipt('release')));
+    });
+  });
+  try {
+    const result = await runAsync(['live', 'claim', 'release', '-n', NOTIFICATION_ID, '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^live claim release → open ✅$/m);
+    assert.doesNotMatch(result.stdout, /expired/);
+  } finally { server.close(); }
+});
+
+test('live claim accepts an expired receipt only for release, and only with the failed stream state', async () => {
+  const expired = expiredReleaseReceipt();
+  const wrongPair = (status, state) => { const r = expiredReleaseReceipt(); r.claim.status = status; r.state = state; return r; };
+  const cases = [
+    // The expired receipt is release's alone.
+    ...['claim', 'done', 'cancel'].map((action) => [action, expired]),
+    // Release takes open/running or expired/failed, nothing in between.
+    ['release', wrongPair('expired', 'running')],
+    ['release', wrongPair('expired', 'done')],
+    ['release', wrongPair('open', 'failed')],
+    ['release', wrongPair('unfinished', 'failed')],
+    ['release', wrongPair('cancelled', 'failed')],
+    // And an expired receipt is still checked like every other one.
+    ['release', { ...expired, notification_id: 'other-notification' }],
+    ['release', { ...expired, claim: { ...expired.claim, late: 'false' } }],
+    ['release', { ...expired, claim: { ...expired.claim, at: '1794146700' } }],
+  ];
+  let receipt;
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    requests += 1;
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(receipt));
+    });
+  });
+  try {
+    for (const [action, candidate] of cases) {
+      receipt = candidate;
+      const before = requests;
+      const result = await runAsync(['live', 'claim', action, '-n', NOTIFICATION_ID, '--room', 'ab12cd', '--token', 'synthetic', '--api', baseUrl]);
+      const label = `${action}: ${JSON.stringify(candidate)}`;
+      assert.equal(result.status, 1, label);
+      assert.equal(result.stdout, '', label);
+      assert.match(result.stderr, /invalid receipt; the action may have completed/, label);
+      assert.equal(requests, before + 1, 'an uncertain action must not be retried automatically');
+    }
+  } finally { server.close(); }
+});
+
 test('live claim rejects unusable success receipts without printing success or repeating the POST', async () => {
   const changed = (mutate) => { const receipt = claimReceipt('done'); mutate(receipt); return receipt; };
   const invalid = [

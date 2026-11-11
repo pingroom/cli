@@ -237,6 +237,9 @@ export const PROVISIONED_AGENT = {
 /**
  * Stub the pairing endpoints. `statuses` is consumed one entry per poll; the
  * last entry repeats. `rounds` counts how many times pairing was restarted.
+ * An ensure or wait response may carry `delayMs`: the stub holds it that many
+ * REAL milliseconds before answering, which a test on fake time uses to stand
+ * in for a slow machine.
  */
 export function pairingServer(statuses, { onRegister, ensureResponses, waitResponses } = {}) {
   const received = [];
@@ -304,8 +307,12 @@ export function pairingServer(statuses, { onRegister, ensureResponses, waitRespo
       } else {
         out = { status: 404, body: { message: 'no route' } };
       }
-      res.writeHead(out.status, { 'Content-Type': 'application/json', ...out.headers });
-      res.end(JSON.stringify(out.body));
+      const answer = () => {
+        res.writeHead(out.status, { 'Content-Type': 'application/json', ...out.headers });
+        res.end(JSON.stringify(out.body));
+      };
+      if (out.delayMs) setTimeout(answer, out.delayMs);
+      else answer();
     });
   }).then((s) => ({ ...s, received }));
 }

@@ -351,8 +351,12 @@ test('activate honors Retry-After for ensure and wait 429s, then completes activ
 
 test('activate stops at the activation deadline without discarding credentials', async () => {
   const home = newHome();
+  // Each answer takes 250 real ms, 2.5 times the 100 ms deadline, as a loaded
+  // machine's would. The deadline and the request timeouts built from it are on
+  // the fake clock, so a slow answer must not read as an outage.
   const { server, baseUrl, received } = await pairingServer([ACTIVE_PAIR], {
-    waitResponses: [{ status: 200, body: { id: 'q-onboard', kind: 'question', state: 'pending' } }],
+    ensureResponses: [{ ...activationEnsureResponse(), delayMs: 250 }],
+    waitResponses: [{ status: 200, body: { id: 'q-onboard', kind: 'question', state: 'pending' }, delayMs: 250 }],
   });
   try {
     const { status, stdout, stderr, sleeps } = await pairThenActivate(

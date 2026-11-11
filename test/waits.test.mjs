@@ -251,10 +251,11 @@ test('a pending answer still keeps the wait going, and a missing state does not 
 
 // --- waits stay inside the wait routes' 30-requests-a-minute throttle ---------
 //
-// questions, approvals, handoffs and notifications `/wait` allow 30 requests a
-// minute per account, shared by every waiter and listener on it. A server (or a
-// `--timeout 0`) that answers `pending` at once, polled once a second, drew a
-// 429 for every second request and starved the account's other waits.
+// questions, approvals, handoffs and notifications `/wait` each allow 30 requests
+// a minute per account, shared by every waiter and listener on that route. A
+// server (or a `--timeout 0`) that answers `pending` at once, polled once a
+// second, drew a 429 for every second request and starved the account's other
+// waits on that route.
 
 const WAIT_COMMANDS = {
   watch: {

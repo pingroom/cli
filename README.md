@@ -367,15 +367,17 @@ expiry yet). It never exits `0` without an answer. A wait whose API answers
 `200` without a `state` is an invalid response, not a pending one: it exits `1`
 at once (`invalid response while waiting for …`) instead of polling forever.
 
-The wait routes allow 30 requests a minute per account, shared by every waiter
-and listener on it. Unanswered decision polls and empty steady-state feed polls
-are spaced at least 2.1 seconds from the previous actual request's start,
-including transient retries, even when the server answers at once or `--timeout`
-is `0`. Concurrent waiters, the initial feed handshake and immediate draining
-of nonempty feed batches can still exceed the shared quota. After a `429` the
-response's `Retry-After` (clamped to 1–60 seconds) is also a minimum delay. If
-the outage bound arrives before a retry is allowed, the wait stops at that
-bound without another request. `--timeout` is whole seconds as
+Each wait route (notifications, acknowledgements, approvals, questions and
+handoffs) allows 30 requests a minute per account, shared by every waiter and
+listener on that route. A waiter on one route does not use up another route's
+budget. Unanswered decision polls and empty steady-state feed polls are spaced
+at least 2.1 seconds from the previous actual request's start, including
+transient retries, even when the server answers at once or `--timeout` is `0`.
+Concurrent waiters on one route, the initial feed handshake and immediate
+draining of nonempty feed batches can still exceed that route's quota. After a
+`429` the response's `Retry-After` (clamped to 1–60 seconds) is also a minimum
+delay. If the outage bound arrives before a retry is allowed, the wait stops at
+that bound without another request. `--timeout` is whole seconds as
 digits: an empty or non-numeric value, such as an unset shell variable in
 `--timeout "$T"`, exits `2` before anything is created. The numeric flags of
 `live` (`--progress`, `--step`, `--deadline-at`, `--eta-at`, `--duration-seconds`,
@@ -586,6 +588,14 @@ may release it. The claimer, or the asker at any time, may finish it. The asker,
 or a room owner or admin, may cancel it. The asker is the member who started
 the stream, or the room owner when an agent or webhook started it.
 
+`release` returns the request to `open` only while someone else can still take
+it. Past the request's deadline (or 4 hours after it was made, when it has none)
+it ends the request as `expired` instead, and the asker hears "No one took it".
+That is a success, exit `0`: the CLI prints `live claim release → expired` and
+says the request had already expired, and `--json` shows `claim.status:
+"expired"` with `state: "failed"`. Repeating it prints `(no change)`. Only
+`release` can end that way.
+
 Exit `0` requires a receipt matching the notification and requested action,
 including a repeated action (`(no change)`). An unusable success response exits
 `1` without printing a success receipt. The action may have completed; inspect
@@ -673,7 +683,8 @@ instead. The same goes for `list`, `watch` and `cancel`. After an empty feed
 response, such as `--timeout 0`, or a transient failure, the next request waits
 until at least 2.1 seconds after the previous request started. The initial cursor
 handshake and draining nonempty batches remain immediate. This per-listener
-pacing does not reserve capacity in the shared 30-requests-a-minute quota.
+pacing does not reserve capacity in the notifications wait route's
+30-requests-a-minute quota, which every listener on the account shares.
 
 ## Bot mailbox
 
