@@ -134,6 +134,7 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Receive pings | `listen` | [Hearing replies](#hearing-replies) |
 | Run a Grok Bot routine | `bot claim`, `ack`, `extend`, `done`, `peek` | [Bot mailbox](#bot-mailbox) |
 | Manage your setup | `rooms`, `webhooks`, `actions`, `attachment` | [Management](#managing-rooms-webhooks-and-quick-actions) |
+| Keep a number in a room for a widget | `metric list`, `set`, `delete` | [Room metrics](#room-metrics-pingroom-metric) |
 | Connect or change settings | `pingroom`, `pair`, `reconnect`, `activate`, `config`, `logout` | [Connecting](#connecting) |
 | Set up an agent | `skills`, `mcp`, `hook` | [Skills](#agent-skills) · [MCP](#mcp-client-setup) · [Hooks](#claude-code-integration-get-pinged-by-your-agent) |
 | Maintain the CLI | `update`, `redeem` | [Updates](#update-the-cli) · [Gift codes](#redeem-a-gift-or-promotional-code) |
@@ -875,6 +876,47 @@ from `actions list --json`) makes the press refuse with
 whose label and icon are both empty is reserved but disabled and answers
 `action_not_configured`; `actions layout --page-order` rewrites the pages from a
 fresh read so nothing is renumbered blind.
+
+## Room metrics (`pingroom metric`)
+
+A **metric** is a named value that lives in a room, set by a script and shown
+later by a phone widget: key `mrr`, label "MRR", format `currency`, unit `USD`,
+value 12400. **Setting one sends no Ping and no push**, so it suits a number that
+changes often. A room holds at most 8.
+
+```bash
+pingroom metric set GZNFB6BZGJIH mrr 12400 --label MRR --format currency --unit USD
+pingroom metric set GZNFB6BZGJIH mrr 12650                  # keeps the label, format and unit
+pingroom metric set GZNFB6BZGJIH open-tickets 12            # a new metric: format number, label open-tickets
+pingroom metric set GZNFB6BZGJIH latency 240 --format unit --unit ms
+pingroom metric set GZNFB6BZGJIH uptime 99.95 --format percent
+pingroom metric set GZNFB6BZGJIH status "All clear" --label Status   # text (<= 24 chars)
+pingroom metric set GZNFB6BZGJIH delta -3.5                 # a negative number is a value, not a flag
+pingroom metric list GZNFB6BZGJIH                           # key, label, value, when the value last changed
+pingroom metric delete GZNFB6BZGJIH mrr
+
+# Through a room's incoming webhook: its URL names the room and carries its own
+# secret, so there is no token and no room argument (and no webhook cooldown).
+pingroom metric set --webhook-url "$PINGROOM_WEBHOOK_URL" mrr 12400 --label MRR --format currency --unit USD
+```
+
+- `<key>` is 1–40 characters of letters, digits, `-` and `_`, lowercased for you
+  (`MRR` is `mrr`). `--label` is at most 24 characters and defaults to the key.
+- `--format` is `number`, `currency`, `percent`, `unit` or `text`. `currency`
+  needs `--unit` to be an ISO 4217 code (`USD`); `unit` needs a short `--unit`
+  such as `ms`; the other formats take none (`--unit` with them exits 2).
+- Send the **raw** value, never `"$12,400"`: the phone formats it for the reader.
+  A number is at most 1e15 in magnitude and keeps four decimal places; `text` is
+  at most 24 characters. A word such as `NaN` is refused unless you pass
+  `--format text`. `percent` takes the percentage itself (`12.5`, not `0.125`).
+- Repeating the stored value changes nothing and keeps its updated time, so a
+  script that runs every minute leaves a truthful "updated" time.
+- Writing needs the connected account to own or administer the room; a member's
+  token can only `list`. Over the room's 8 metrics the server answers
+  `metrics_limit_reached`. `--webhook-url` (alias `--webhook`, `-w`) works for
+  `set` only and cannot be combined with `--token` or `--api`; `metric` never
+  reads `PINGROOM_WEBHOOK_URL` by itself, so pass it explicitly.
+- If the operator switched room metrics off, every call answers `feature_disabled`.
 
 ## GitHub Actions
 

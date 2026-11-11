@@ -19,6 +19,7 @@
 //            --wait, block until they acknowledge / answer.
 //   handoffs List the agent's open handoffs or bounded recent history.
 //   listen   Long-poll for pings arriving in the agent's rooms.
+//   metric   List, set, or delete a room's metrics: named values a widget shows.
 //   live     Drive a live progress card (iOS Live Activity / Android live
 //            update) on the room members' lock screen: start / update / end.
 //   bot      Claim, ack, extend and finish the Grok Bot mailbox events a
@@ -48,10 +49,11 @@ import {
   parseActionsArgs, parseApprovalArgs, parseArgs, parseAttachmentArgs, parseBotArgs, parseCancelArgs,
   parseConfigArgs, parseConnectArgs, parseHandoffArgs, parseHandoffsArgs, parseHookArgs, parseListArgs,
   parseListenArgs, parseLiveArgs, parseLogoutArgs, parsePairArgs, parseQArgs, parseReconnectArgs,
-  parseRedeemArgs, parseRoomsArgs, parseRunArgs, parseSkillsArgs, parseUpdateArgs, parseWatchArgs,
+  parseMetricArgs, parseRedeemArgs, parseRoomsArgs, parseRunArgs, parseSkillsArgs, parseUpdateArgs, parseWatchArgs,
   parseWebhooksArgs,
 } from '../lib/parser.js';
 import { actions, approval, attachment, rooms, webhooks } from '../lib/commands/manage.js';
+import { metric } from '../lib/commands/metric.js';
 import { bot } from '../lib/commands/bot.js';
 import { ping } from '../lib/commands/ping.js';
 import { run } from '../lib/commands/run.js';
@@ -88,6 +90,7 @@ const COMMANDS = {
   live: (rest) => live(parseLiveArgs(rest)),
   rooms: (rest) => rooms(parseRoomsArgs(rest)),
   webhooks: (rest) => webhooks(parseWebhooksArgs(rest)),
+  metric: (rest) => metric(parseMetricArgs(rest)),
   actions: (rest) => actions(parseActionsArgs(rest)),
   approval: (rest) => approval(parseApprovalArgs(rest)),
   attachment: (rest) => attachment(parseAttachmentArgs(rest)),
@@ -101,7 +104,7 @@ const COMMANDS = {
 // API commands resume previously authorized cleanup using its saved origin.
 const RECOVERY_COMMANDS = new Set([
   'ping', 'ask', 'watch', 'await', 'cancel', 'list', 'handoff', 'handoffs',
-  'listen', 'redeem', 'activate', 'live', 'rooms', 'webhooks', 'actions',
+  'listen', 'redeem', 'activate', 'live', 'rooms', 'webhooks', 'actions', 'metric',
   'approval', 'attachment', 'bot', 'pair', 'reconnect',
 ]);
 

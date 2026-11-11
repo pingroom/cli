@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { CLI, baseEnv, run, runAsync, startServer, questionServer } from './helpers.mjs';
 import { COMMAND_HELP_SECTIONS, HELP_SHARED_COMMAND } from '../lib/help.js';
 import {
-  MANAGE_FLAGS, parseActionsArgs, parseApprovalArgs, parseAttachmentArgs, parseRoomsArgs, parseWebhooksArgs,
+  MANAGE_FLAGS, parseActionsArgs, parseApprovalArgs, parseAttachmentArgs, parseMetricArgs, parseRoomsArgs, parseWebhooksArgs,
 } from '../lib/parser.js';
 import { CliExit } from '../lib/util.js';
 
@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 test('management commands appear in the top-level help', () => {
   const { status, stdout } = run(['--help']);
   assert.equal(status, 0);
-  for (const noun of ['rooms', 'webhooks', 'actions', 'approval', 'attachment']) {
+  for (const noun of ['rooms', 'webhooks', 'actions', 'approval', 'attachment', 'metric']) {
     assert.match(stdout, new RegExp(`^  ${noun}`, 'm'));
   }
 });
@@ -31,6 +31,7 @@ test('each management noun prints its own help', () => {
     ['actions', /actions set <1-16>/],
     ['approval', /exit 0 approve · 4 deny/],
     ['attachment', /attachment get <id>/],
+    ['metric', /metric set <room> <key> <value>/],
   ]) {
     const { status, stdout } = run([noun, '--help']);
     assert.equal(status, 0, `${noun} --help exits 0`);
@@ -548,6 +549,7 @@ const MANAGE_NOUNS = {
   actions: parseActionsArgs,
   approval: parseApprovalArgs,
   attachment: parseAttachmentArgs,
+  metric: parseMetricArgs,
 };
 
 /** Run a parser the way main() does, keeping fail()'s stderr and exit code out of the runner. */
@@ -599,7 +601,7 @@ test('every management command the README shows parses for its command', () => {
   let checked = 0;
   for (const block of fences) {
     for (const line of block.replace(/\\\n\s*/g, ' ').split('\n')) {
-      const found = /\bpingroom (rooms|webhooks|actions|approval|attachment)\b(.*)$/.exec(line);
+      const found = /\bpingroom (rooms|webhooks|actions|approval|attachment|metric)\b(.*)$/.exec(line);
       if (!found) continue;
       const [, noun, rest] = found;
       const argv = shellWords(rest);

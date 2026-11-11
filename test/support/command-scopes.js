@@ -36,6 +36,8 @@ export const COMMAND_SCOPES = {
   ],
   actions: ['pingroom:rooms:read', 'pingroom:actions:write', 'pingroom:actions:trigger'],
   webhooks: ['pingroom:webhooks:read', 'pingroom:webhooks:write', 'pingroom:webhooks:delete'],
+  // `metric set --webhook-url` uses a webhook secret instead and needs no scope.
+  metric: ['pingroom:metrics:read', 'pingroom:metrics:write'],
   attachment: ['pingroom:notifications:read', 'pingroom:attachments:write'],
   redeem: ['pingroom:codes:redeem'],
   // Local-only: no agent-authenticated route, so nothing to request.
