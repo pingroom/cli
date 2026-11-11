@@ -221,6 +221,8 @@ pingroom ping [options]
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
+      --tag <tag>        Label the ping (lowercase letters, digits, - and _);
+                         repeat for up to 10
       --idempotency-key <k>  Dedupe key; identical requests replay the first ping
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
                          applies only when neither --token nor --room is given;
@@ -276,6 +278,20 @@ The room ticks the list together: a checked item is checked for everyone, it
 cannot be unchecked, and the first tick on an item alerts the other recipients.
 Like the location flags, `--item` works with agent-token and incoming-webhook
 sends and replaces only `data.checklist` when combined with `--data`.
+
+To label a ping so it can be found later, repeat `--tag` (up to 10). A tag is 1
+to 32 characters: lowercase letters, digits, `-` and `_`, starting with a letter
+or digit. The CLI trims, lowercases and de-duplicates them, as the API does, and
+refuses one that breaks the rule before sending:
+
+```bash
+pingroom ping --room ab12cd -m "Deploy shipped" --tag deploy --tag prod
+pingroom listen --tag deploy         # hear only pings carrying that tag
+```
+
+`--tag` works with agent-token and incoming-webhook sends. `live start --tag`
+labels a live stream when it is created; a later `live update` or `live end`
+cannot change it, so `--tag` there is a usage error.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
 acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
@@ -519,6 +535,8 @@ pingroom live <start|update|end|get|claim> [options]
       --accent-override <#rrggbb>  Semantic accent for this frame
       --failed               end only: finish as failed instead of done
   -d, --data <json>          Structured data object carried on this frame
+      --tag <tag>            start only: label the stream; repeat for up to 10
+                             (fixed at creation, same rule as ping --tag)
   -t, --title <text>         Card title (<= 40 chars; the request text, <= 120,
                              for --template claim)
   -n, --notification-id <id> claim only: the request's notification id
@@ -663,6 +681,8 @@ pingroom listen --from "$LAST_ID"    # catch up from a known ping id
       --timeout <sec>    Per long-poll hold (0-30, default 25)
       --limit <n>        Max pings per batch (1-100, default 50)
       --from <id>        Start after this ping id instead of "now"
+      --tag <tag>        Print only pings carrying this tag (one tag; the same
+                         rule as ping --tag). Other pings are skipped
       --once             Print one batch and exit instead of blocking forever
       --json             One JSON object per line instead of a readable line
 ```
