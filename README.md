@@ -223,6 +223,10 @@ pingroom ping [options]
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
       --tag <tag>        Label the ping (lowercase letters, digits, - and _);
                          repeat for up to 10
+      --replace <id>     Edit a ping you already sent (agent token only):
+                         message, --title and data change in place, silently
+      --replace-key <k>  Replace your earlier ping with this key instead of
+                         sending a new one (token or webhook)
       --idempotency-key <k>  Dedupe key; identical requests replay the first ping
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
                          applies only when neither --token nor --room is given;
@@ -292,6 +296,47 @@ pingroom listen --tag deploy         # hear only pings carrying that tag
 `--tag` works with agent-token and incoming-webhook sends. `live start --tag`
 labels a live stream when it is created; a later `live update` or `live end`
 cannot change it, so `--tag` there is a usage error.
+
+To change what a ping you already sent says, pass its id to `--replace`. The
+notification on each recipient's phone changes in place, silently: no second
+notification, no sound, unread counts unchanged. The ping id is the `id` a send
+returns (`--json`), or the one `pingroom listen` prints.
+
+```bash
+ID=$(pingroom ping --token "$PINGROOM_TOKEN" --room ab12cd -m "Build 41: running" --json | jq -r .id)
+pingroom ping --token "$PINGROOM_TOKEN" --room ab12cd -m "Build 41: green" --replace "$ID"
+```
+
+`--replace` needs an agent token (`--token` and `--room`), not a webhook. The
+message is required and always sent; the title and data keep their current value
+unless you pass `--title` (an empty `--title ''` clears it) or a data flag
+(`--data`, `--url`, `--location`), which replace the ping's data as a whole.
+Sending the text and data the ping already has is a harmless no-op. A
+replacement counts like a send against the free plan's daily agent ping limit.
+Only an ordinary ping you sent in a private room, under 24 hours old and
+replaced fewer than 20 times can be replaced; a question, handoff, live
+progress card, "Who's on it?" request, a ping that needs a confirmation or has a
+checklist cannot, and the API says which with its own error code. `--replace` is
+a usage error when combined with `--replace-key`, `--action`, `--urgent`,
+`--require-ack`, `--ack-mode`, `--ack-timeout`, `--attach`, `--tag`, `--item` or
+`--idempotency-key`, since a replacement changes only the message, title and data.
+
+A script that cannot keep the id passes `--replace-key <key>` (1 to 64
+characters: letters, digits, `.` `_` `:` `-`) on every send instead. It works
+with agent-token and incoming-webhook sends. A send with a key replaces your
+earlier ping with the same key in that room (same token, or same webhook) while
+that ping can still be replaced, and prints `ping replaced ✅`; otherwise it
+sends a new ping that keeps the key. A send that asks for something a
+replacement cannot do (`--require-ack`, `--urgent`, `--attach`, `--tag`,
+`--action`, or a different correlation id) always sends a new ping.
+
+```bash
+pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 41: running" --replace-key build-41
+pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 41: green"   --replace-key build-41   # replaces it
+```
+
+Until the server has replacing switched on, `--replace` fails with a bare 404
+and `--replace-key` sends a new ping every time.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
 acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
