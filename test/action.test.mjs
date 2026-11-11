@@ -331,28 +331,21 @@ function runActionScript(env) {
   });
 }
 
-test('the Action passes token ping keys and rejects unsupported webhook keys before sending', async () => {
+test('the Action hands a ping its idempotency-key on either transport', async () => {
   const { server, baseUrl, received } = await transportServer();
   const webhook = `${baseUrl}/webhooks/room/HOOKSECRET`;
   try {
-    for (const inputs of [
-      { PINGROOM_WEBHOOK_URL: webhook },
-      { PINGROOM_WEBHOOK_URL: webhook, PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' },
+    for (const [inputs, label] of [
+      [{ PINGROOM_WEBHOOK_URL: webhook }, 'webhook'],
+      [{ PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd' }, 'token'],
     ]) {
       const before = received.length;
       const { status, stderr } = await runActionScript({
         PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', PR_IDEMPOTENCY_KEY: 'deploy-77', ...inputs,
       });
-      assert.equal(status, 2, stderr);
-      assert.match(stderr, /unavailable in the Action pinned to CLI 0\.15\.1/);
-      assert.equal(received.length, before);
+      assert.equal(status, 0, `${label}: ${stderr}`);
+      assert.deepEqual(received.slice(before).map((r) => r.idempotency), ['deploy-77'], label);
     }
-    const { status, stderr } = await runActionScript({
-      PINGROOM_API_URL: baseUrl, PR_MESSAGE: 'Deploy shipped', PR_IDEMPOTENCY_KEY: 'deploy-77',
-      PINGROOM_TOKEN: 'tok', PR_ROOM: 'ab12cd',
-    });
-    assert.equal(status, 0, stderr);
-    assert.deepEqual(received.map((r) => r.idempotency), ['deploy-77']);
   } finally {
     server.close();
   }

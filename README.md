@@ -908,11 +908,8 @@ webhook workflow onto its token.
 
 `idempotency-key` follows the CLI rule: 1–255 printable ASCII characters,
 spaces allowed, so `'deploy ${{ github.sha }}'` works.
-The Action currently pins npm CLI **0.15.1**, which supports keys for handoffs
-and token pings. A ping combining `webhook-url` and `idempotency-key` fails
-before sending, even if `token` and `room` are also set. Webhook key support
-exists in CLI source but needs a package release and an Action pin update.
-To use a key now, provide `token` and `room` without `webhook-url`.
+The Action pins npm CLI **0.16.0**, which sends the key on handoffs and on
+pings over either transport, `token` or `webhook-url`.
 
 `options` is one `value:label` per line. Trailing newlines are ignored first, so
 a value that is a single line after trimming — including a one-line `options: |`

@@ -71,7 +71,7 @@ inputs:
     description: 'For a handoff: "active" (default) or "passive".'
     required: false
   idempotency-key:
-    description: 'For a handoff or token ping: dedupe key sent as Idempotency-Key; retries reuse it. 1-255 printable ASCII. Webhook pings require a newer CLI than the Action currently pins.'
+    description: 'For a handoff or a ping (token or webhook-url): dedupe key sent as Idempotency-Key; retries reuse it. 1-255 printable ASCII.'
     required: false
   correlation-id:
     description: 'For a handoff: opaque id echoed on every read.'
@@ -159,7 +159,7 @@ runs:
         set -o pipefail
         # Release gate: keep the Action on an npm-published version. Advance
         # this independently only after the matching CLI package is public.
-        CLI="npx --yes @pingroom/cli@0.15.1"
+        CLI="npx --yes @pingroom/cli@0.16.0"
 
         # Split an options input into the PR_OPTS array, one value:label spec per
         # element.
@@ -237,11 +237,6 @@ runs:
           code=$?
           set -e
           exit $code
-        fi
-
-        if [ -n "$PINGROOM_WEBHOOK_URL" ] && [ -n "$PR_IDEMPOTENCY_KEY" ]; then
-          echo 'pingroom: webhook-url with idempotency-key is unavailable in the Action pinned to CLI 0.15.1. Use token and room without webhook-url, or wait for an Action release with webhook key support.' >&2
-          exit 2
         fi
 
         args=(ping -m "$PR_MESSAGE")
