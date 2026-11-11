@@ -218,6 +218,9 @@ pingroom ping [options]
       --location-label <t>  Location label (<= 100 chars; requires --location)
       --location-address <t> Address (<= 255 chars; requires --location)
       --item <text>      Add a checklist item (<= 80 chars); repeat for up to 25
+      --action-url "Label=https://…"      A button that opens the link; repeatable
+      --action-webhook "Label=https://…"  A button PingRoom delivers to your URL; repeatable
+      --action-body <json>  The body a --action-webhook URL receives (once per one, in order)
       --require-ack      Keep the ping open until an eligible recipient acknowledges it
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
@@ -387,6 +390,53 @@ pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 512 ready" \
 ```
 
 The URL must be absolute http(s) (≤ 2048 chars); the label caps at 26 chars.
+
+### Buttons
+
+A ping can carry up to three buttons, on the notification's long-press actions
+and on its card in the app (agent token or webhook):
+
+```bash
+pingroom ping --room AB12CD -m "Disk 91% on db-2" \
+  --action-url "Open dashboard=https://grafana.example.com/d/disk" \
+  --action-webhook "Clean up now=https://ops.example.com/cleanup" \
+  --action-body '{"host":"db-2"}'
+```
+
+- `--action-url "Label=https://…"` opens the link. The app shows its host under
+  the label and opens it in the in-app browser.
+- `--action-webhook "Label=https://…"` never makes the phone call your URL: a tap
+  calls PingRoom, which POSTs a signed `notification.action` event to it, once
+  per person and for 24 hours. The room owner must be on Pro. Nobody sees the URL
+  or the body.
+- `--action-body '<json>'` (a JSON object, ≤ 10 keys, ≤ 1 KB) is the `body` your
+  URL receives. Give it once per `--action-webhook`, paired in order, or not at
+  all.
+- `--action-url` buttons come first, then `--action-webhook` ones, with ids `a1`,
+  `a2`, `a3`. For your own ids, a style (`primary`, `danger`) or another order,
+  send `data.actions` in `--data` instead (not both).
+- The value splits at the first `=` that is followed by a URL scheme, so a label
+  may contain `=` and the URL's query may too.
+
+The CLI refuses before sending what the server would refuse: a label over 26
+characters, with line breaks or invisible formatting characters, shaped like a
+web address, domain or IP address, or equal to one of PingRoom's own buttons in
+any language; a URL that is not `https://` on a public hostname (no user name or
+password, IP address, `localhost`, internal name or non-ASCII host; punycode is
+fine), or a port on a webhook button. Buttons never go to a public or personal
+room, never with `--require-ack`, and never with `--replace` (a ping with buttons
+cannot be replaced).
+
+With a webhook button the output prints `Button signing secret: <hex>` (in GitHub
+Actions it is masked first; with `--json` it is `action_signing_secret` in the
+raw response). It is the ping's own secret and no read returns it. Your server
+verifies each delivery with it exactly like an outgoing webhook:
+`X-PingRoom-Signature-V2` is HMAC-SHA256 over
+`v2\n{X-PingRoom-Timestamp}\n{X-PingRoom-Delivery}\n{raw body}`. Refuse a
+timestamp more than 5 minutes off, and run each `X-PingRoom-Delivery` once.
+Look the secret up by the body's `notification_id`, which is only a lookup key
+until the signature checks out. The body names who tapped only by `actor.id`, a
+pseudonym that differs in every room, and `actor.display_name`.
 
 To send the file itself rather than a link to it, use `--attach`. Each file is
 uploaded separately and only the resulting ids ride the ping; recipients open
