@@ -228,6 +228,8 @@ pingroom ping [options]
                          message, --title and data change in place, silently
       --replace-key <k>  Replace your earlier ping with this key instead of
                          sending a new one (token or webhook)
+      --withdraw <id>    Take back a ping you already sent (agent token only):
+                         its notification is removed from recipients' phones
       --idempotency-key <k>  Dedupe key; identical requests replay the first ping
   -w, --webhook <url>    Room webhook URL (or env PINGROOM_WEBHOOK_URL, which
                          applies only when neither --token nor --room is given;
@@ -338,6 +340,28 @@ pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 41: green"   --replace-key bu
 
 Until the server has replacing switched on, `--replace` fails with a bare 404
 and `--replace-key` sends a new ping every time.
+
+To take back a ping you already sent, pass its id to `--withdraw`. Its
+notification is removed from each recipient's Lock Screen and Notification
+Center, and the ping stays in the room's history with its text, marked withdrawn.
+Unread counts do not change.
+
+```bash
+pingroom ping --token "$PINGROOM_TOKEN" --room ab12cd --withdraw "$ID"   # prints "ping withdrawn ✅"
+```
+
+`--withdraw` needs an agent token (`--token` and `--room`), not a webhook, and no
+`--message`. It is a usage error combined with any other ping option, since taking
+a ping back sends nothing. The same pings can be withdrawn as can be replaced: an
+ordinary ping you sent in a private room, under 24 hours old; the API refuses
+the rest with its own error code. Withdrawing a ping that is already withdrawn is
+a harmless no-op, it does not count against the free plan's daily agent ping
+limit, and a withdrawn ping can no longer be replaced (`--replace` fails with
+`ping_withdrawn`; `--replace-key` starts a new ping). Removal is best effort: a
+phone that is offline, has the app force-quit or restricts background activity
+keeps the notification until it next opens the app, and only recent builds of the
+iPhone and Android apps remove it. Until the server has withdrawing switched on,
+`--withdraw` fails with a bare 404.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
 acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
