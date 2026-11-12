@@ -56,7 +56,7 @@ test('the agent-token send carries buttons too and prints the signing secret', a
     const r = await runAsync([
       'ping', '--token', 'pr_test', '--room', 'AB12CD', '--api', baseUrl, '-m', 'Disk 91%',
       '--action-webhook', 'Clean up now=https://ops.example.com/cleanup',
-    ]);
+    ], { GITHUB_ACTIONS: '' });
     assert.equal(r.status, 0, r.stderr);
     assert.equal(received[0].url, '/api/agent/rooms/AB12CD/notifications');
     assert.deepEqual(received[0].body.data.actions, [{ label: 'Clean up now', type: 'webhook', url: 'https://ops.example.com/cleanup' }]);
