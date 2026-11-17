@@ -217,7 +217,10 @@ test('inherited Object properties in flag position are not treated as options', 
   try {
     for (const poison of ['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty']) {
       const { status, stderr } = await runAsync(['ping', '-w', `${baseUrl}/hook`, poison, '-m', 'hi']);
-      assert.equal(status, 0, `${poison} swallowed the message: ${stderr}`);
+      // A bare word, so not an option that eats `-m hi`; ping takes no bare
+      // words, so it is named and refused.
+      assert.equal(status, 2);
+      assert.match(stderr, new RegExp(`unexpected argument "${poison}"`));
     }
     // And they are still rejected when they arrive as an actual flag.
     const { status, stderr } = await runAsync(['ping', '-w', `${baseUrl}/hook`, '--constructor', '-m', 'hi']);
@@ -540,4 +543,34 @@ test('names Object.prototype owns are unknown commands, not handlers', () => {
     assert.match(stderr, new RegExp(`pingroom: unknown command: ${name}\\n`));
     assert.doesNotMatch(stderr, /unexpected error/);
   }
+});
+
+// An unquoted value leaves its other words as positionals. They were dropped,
+// so `approval -p Deploy to production` asked a human to approve "Deploy".
+test('a stray word is refused, not dropped, by the commands that take flags only', async () => {
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => { requests += 1; res.writeHead(201, { 'Content-Type': 'application/json' }); res.end('{"id":"x"}'); });
+  try {
+    for (const argv of [
+      ['ping', '-m', 'Deploy', 'finished', 'ok'],
+      ['ask', '-p', 'Deploy', 'to', 'production?'],
+      ['approval', '-p', 'Deploy', 'to', 'production'],
+      ['handoff', '-m', 'Ship', 'it', 'now'],
+    ]) {
+      const room = argv[0] === 'handoff' ? [] : ['--room', 'ab12cd'];
+      const result = await runAsync([...argv, '--token', 't', ...room, '--api', baseUrl]);
+      assert.equal(result.status, 2, argv.join(' '));
+      assert.match(result.stderr, /unexpected argument "(finished|to|it)"\. Quote a value/);
+    }
+    assert.equal(requests, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('an unknown --flag=value never echoes the value', () => {
+  const { status, stderr } = run(['ping', '--token=pgr_SECRET', '-m', 'hi']);
+  assert.equal(status, 2);
+  assert.match(stderr, /Unknown option: --token=…/);
+  assert.doesNotMatch(stderr, /pgr_SECRET/);
 });

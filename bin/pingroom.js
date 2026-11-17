@@ -168,8 +168,13 @@ async function main() {
 // trace — and the same exit 1 every other failure uses, so scripts branching on
 // the code are unaffected. PINGROOM_DEBUG keeps the stack for whoever is fixing
 // it.
-main().catch((error) => {
-  if (error instanceof CliExit) return exitAfterOutput(error.code);
+main().catch(async (error) => {
+  if (error instanceof CliExit) {
+    // A failing command is when an outdated CLI matters most. The notice goes
+    // to stderr after the error and cannot change the exit code.
+    if (!['update', 'upgrade', 'run'].includes(process.argv[2])) await maybeNotifyUpdate(VERSION);
+    return exitAfterOutput(error.code);
+  }
   if (process.env.PINGROOM_DEBUG) {
     process.stderr.write(`${error?.stack ?? error}\n`);
   }

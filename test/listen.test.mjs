@@ -313,3 +313,30 @@ test('listen does not pace a round that delivered pings', async () => {
     server.close();
   }
 });
+
+// A redirect or an unsendable token fails identically on every retry. listen
+// (even --once) and watch used to call it an outage and retry without end.
+test('listen and watch stop at once on a request that can never succeed', async () => {
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    requests += 1;
+    res.writeHead(301, { Location: 'https://example.invalid/' });
+    res.end();
+  });
+  try {
+    const redirected = await runAsync(['listen', '--once', '--token', 't', '--api', baseUrl], {}, { timeoutMs: 15_000 });
+    assert.equal(redirected.status, 1);
+    assert.match(redirected.stderr, /listen: unexpected redirect/);
+    assert.equal(requests, 1);
+
+    const watched = await runAsync(['watch', 'q_1', '--token', 't', '--api', baseUrl], {}, { timeoutMs: 15_000 });
+    assert.equal(watched.status, 1);
+    assert.match(watched.stderr, /unexpected redirect/);
+
+    const badToken = await runAsync(['listen', '--once', '--token', 'abc\ndef', '--api', baseUrl], {}, { timeoutMs: 15_000 });
+    assert.equal(badToken.status, 1);
+    assert.match(badToken.stderr, /could not be built/);
+  } finally {
+    server.close();
+  }
+});

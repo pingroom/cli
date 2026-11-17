@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import {
   run, runAsync, startServer, questionServer, newHome, seedCredential, transportServer,
 } from './helpers.mjs';
@@ -1001,6 +1002,40 @@ test('a webhook ping answers an idempotency conflict and an in-flight first requ
     assert.match(busy.stderr, /still being processed/);
     assert.match(busy.stderr, /Retry with the same --idempotency-key/);
     assert.equal(received.length, 2);
+  } finally {
+    server.close();
+  }
+});
+
+// --expected-room-sha256 was in ping's parser and nothing read it: a wrong hash
+// still sent the ping to whatever room resolved, exit 0.
+test('--expected-room-sha256 pins the room for ping, ping --withdraw, and refuses a webhook', async () => {
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => {
+    requests += 1;
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end('{"id":"n1"}');
+  });
+  const pinned = createHash('sha256').update('ab12cd', 'utf8').digest('hex');
+  try {
+    for (const args of [
+      ['ping', '--token', 't', '--room', 'other-room', '-m', 'hi'],
+      ['ping', '--token', 't', '--room', 'other-room', '--withdraw', 'n1'],
+    ]) {
+      const wrong = await runAsync([...args, '--api', baseUrl, '--expected-room-sha256', pinned]);
+      assert.equal(wrong.status, 2, args.join(' '));
+      assert.match(wrong.stderr, /resolved room does not match --expected-room-sha256/);
+      const malformed = await runAsync([...args, '--api', baseUrl, '--expected-room-sha256', 'notahash']);
+      assert.equal(malformed.status, 2);
+    }
+    const webhook = await runAsync(['ping', '-w', `${baseUrl}/api/webhooks/x/y`, '-m', 'hi', '--expected-room-sha256', pinned]);
+    assert.equal(webhook.status, 2);
+    assert.match(webhook.stderr, /a webhook URL carries its own room/);
+    assert.equal(requests, 0, 'nothing may be sent when the pin fails');
+
+    const right = await runAsync(['ping', '--token', 't', '--room', 'ab12cd', '-m', 'hi', '--api', baseUrl, '--expected-room-sha256', pinned]);
+    assert.equal(right.status, 0, right.stderr);
+    assert.equal(requests, 1);
   } finally {
     server.close();
   }

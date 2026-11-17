@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { run, newHome, seedCredential } from './helpers.mjs';
+import { run, runAsync, startServer, newHome, seedCredential } from './helpers.mjs';
 
 test('bare pingroom prints the connected status, old-server latest-pings fallback, and help', () => {
   const home = newHome();
@@ -91,5 +91,22 @@ test('non-TTY: a command needing a credential fails with the usage code, not a p
     assert.equal(status, 2, `${argv[0]} should be a usage error`);
     assert.match(stderr, /PINGROOM_TOKEN/);
     assert.doesNotMatch(stdout, /Choose \[1\]/);
+  }
+});
+
+// `pingroom --api <url> --help` reached the pairing flow and registered a robot.
+test('a bare invocation with --help prints the overview and contacts nothing', async () => {
+  let requests = 0;
+  const { server, baseUrl } = await startServer((req, res) => { requests += 1; res.writeHead(500); res.end(); });
+  try {
+    for (const argv of [['--api', baseUrl, '--help'], ['--agent-label', 'x', '-h']]) {
+      const result = await runAsync(argv, { PINGROOM_INTERNAL_TEST_TTY: '1', NODE_ENV: 'test' });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /^pingroom: reach a human/);
+      assert.doesNotMatch(result.stdout, /Not connected/);
+    }
+    assert.equal(requests, 0);
+  } finally {
+    server.close();
   }
 });
