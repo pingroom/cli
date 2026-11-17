@@ -84,7 +84,7 @@ test('activate keeps server guidance and gives recipient_not_ready a concrete mo
   });
   try {
     const { status, stdout, stderr } = await pairThenActivate(home, baseUrl);
-    assert.equal(status, 1, stderr);
+    assert.equal(status, 4, stderr);
     assert.match(stdout, /No supported phone has registered for this account yet/);
     assert.match(stdout, /Install or update PingRoom: https:\/\/pingroom\.io\/i/);
     assert.match(stdout, /Open it, sign in, and enable notifications/);

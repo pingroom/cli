@@ -84,7 +84,7 @@ inputs:
     required: false
     default: 'false'
   ask:
-    description: 'Ask a room question instead of sending a ping (requires `token` and `room`). With `wait`, blocks until it is answered.'
+    description: 'Ask a room question instead of sending a ping (requires `token` and `room`). With `wait`, blocks until it is answered. Without `options` it is an Approve/Deny gate: the step succeeds only on Approve and fails (exit 4) on Deny. With `options`, any answer succeeds; branch on the `answer` output.'
     required: false
     default: 'false'
   context:

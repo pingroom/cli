@@ -489,8 +489,9 @@ pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
 # Fire-and-forget (prints the question id), then watch it later:
 ID=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd -p 'Merge PR #42?' --ttl 1800)
 pingroom watch --token "$PINGROOM_TOKEN" "$ID"
-# This one has the default Approve/Deny options, so watch treats it as a gate:
-# exit 0 only on approve, 4 on deny. Any other question exits 0 on any answer.
+# This one has the default Approve/Deny options, so it is a gate, for watch and
+# for ask --wait alike: exit 0 only on approve, 4 on deny. Any other question
+# exits 0 on any answer. (Up to 0.16.0, ask --wait exited 0 on deny.)
 
 pingroom list   --token "$PINGROOM_TOKEN" --state pending
 pingroom cancel --token "$PINGROOM_TOKEN" "$ID"
@@ -957,7 +958,8 @@ pingroom approval -p "Ship v2 to production?" --wait   # exit 0 approved · 4 de
 ID=$(pingroom approval -p "Ship v2 to production?")     # or create it now, then resume:
 pingroom watch "$ID" && ./deploy.sh                     # same exit codes as --wait
 
-pingroom attachment get <id> --out report.md            # stdout when piped; --out - to force it onto a terminal
+pingroom attachment get <id> --out report.md            # stdout when piped; --out - to force it onto a terminal;
+                                                        # an existing file needs --force
 pingroom attachment delete <id>
 ```
 
@@ -1197,6 +1199,14 @@ export PINGROOM_ROOM="<room invite code>"
 | `Notification` | Pings when the agent is idle or waiting for input (permission prompts are skipped — the `PreToolUse` question already covers those). |
 | `SessionEnd` | Pings when a session ends (except `/clear`). |
 | `PreToolUse` | Asks a PingRoom **question** and waits for you to review and Approve/Deny it in the app. Which tools are gated is the settings.json `matcher` (default `Bash`) — not the CLI. |
+
+**Some calls never leave your machine.** A call that carries file content
+(`Write`, `Edit`), one too long to show in full, and one that appears to contain
+a credential (a bearer token, `PASSWORD=...`, `--token ...`, a URL with a
+password, a recognisable API key) is not sent to the room: the hook defers to
+the local prompt. A reference such as `$TOKEN` is not a credential and is sent.
+The check is a pattern match, not a guarantee, so keep secrets out of command
+lines.
 
 **It always fails open.** If PingRoom is unreachable, the token/room is missing,
 or the question expires, the hook defers to the normal local prompt
@@ -1503,6 +1513,24 @@ A copy installed another way is left alone. The command exits 2, names how it
 was installed in `install` (`npx`, `pnpm`, `bun`, `yarn`, `volta`, `local` for
 a project dependency, `source` for a checkout) and prints the one line that
 updates it, such as `pnpm add --global @pingroom/cli@<version>`.
+
+`pingroom update --check` and `pingroom update` both say when `min-release-age`
+in your npm config holds the newest release, and until what date (`held_until`
+in the JSON result).
+
+## Timeouts and proxies
+
+A request that is not a blocking wait gives up after 60 seconds (a file
+transfer after 180) and exits 1. Nothing is retried for you: repeat a send with
+the same `--idempotency-key`.
+
+`HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honoured on a Node that can apply
+them from inside the process. On an older Node (22.21 or newer), also set
+`NODE_USE_ENV_PROXY=1`; the CLI says so when a request fails with a proxy set.
+
+`409 recipient_not_ready` exits 4 on every command that can receive it (`ping
+--require-ack`, `live`, `actions trigger`, `ask`, `approval`, `handoff`,
+`activate`), so a script can wait and retry.
 
 ## Update notifications
 

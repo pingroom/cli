@@ -215,3 +215,48 @@ test('watch and approval help say that watch resumes an approval as a gate', () 
   assert.match(run(['watch', '--help']).stdout, /gate: exit 0 only on approve, 4 on deny/);
   assert.match(run(['approval', '--help']).stdout, /pingroom watch <id>\s+Resume a pending approval/);
 });
+
+// `ask` with no --option is the server's approve/deny question. --wait mapped
+// every answer to 0, so `pingroom ask --wait -p "Deploy?" && ./deploy.sh`
+// deployed after a Deny while `watch` on the same question exited 4.
+test('ask --wait is a gate on an approve/deny question and plain on any other', async () => {
+  for (const [options, value, code] of [
+    [APPROVE_DENY_WIRE, 'deny', 4],
+    [APPROVE_DENY_WIRE, 'approve', 0],
+    [[{ value: 'hold', label: 'Hold' }, { value: 'deny', label: 'Deny' }], 'deny', 0],
+  ]) {
+    const { server, baseUrl } = await questionServer({
+      'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_a', state: 'pending' } }),
+      'GET /api/agent/questions/q_a/wait': () => ({ status: 200, body: { id: 'q_a', state: 'answered', options, answer: { value, label: value } } }),
+    });
+    try {
+      const { status, stdout } = await runAsync(['ask', '--wait', '-p', 'Deploy?', '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl]);
+      assert.equal(status, code, `${value} of ${options.length}`);
+      assert.equal(stdout.trim(), value);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+test('409 recipient_not_ready exits 4 on every send, as the exit-code help says', async () => {
+  const notReady = () => ({ status: 409, body: { code: 'recipient_not_ready', message: 'No phone yet.' } });
+  const { server, baseUrl } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/notifications': notReady,
+    'POST /api/agent/rooms/ab12cd/questions': notReady,
+    'POST /api/agent/rooms/ab12cd/actions/1/trigger': notReady,
+  });
+  try {
+    for (const argv of [
+      ['ping', '-m', 'hi', '--require-ack'],
+      ['ask', '-p', 'Deploy?'],
+      ['approval', '-p', 'Deploy?'],
+      ['actions', 'trigger', '1', '--require-ack'],
+    ]) {
+      const { status, stderr } = await runAsync([...argv, '--token', 'tok', '--room', 'ab12cd', '--api', baseUrl]);
+      assert.equal(status, 4, `${argv.join(' ')}: ${stderr}`);
+    }
+  } finally {
+    server.close();
+  }
+});

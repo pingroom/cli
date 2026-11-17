@@ -17,6 +17,7 @@
 
 import { EXIT } from '../lib/constants.js';
 import { CliExit, fail, stripControlChars } from '../lib/util.js';
+import { useEnvProxy } from '../lib/http.js';
 import { VERSION } from '../lib/version.js';
 import { HELP, HELP_SHORT, HELP_TOPICS } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
@@ -107,6 +108,7 @@ async function exitAfterOutput(code) {
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  await useEnvProxy();
 
   if (command === '-h' || command === '--help') {
     process.stdout.write(`${HELP_SHORT}\n`);

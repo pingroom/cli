@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CLI, baseEnv, run, runAsync, startServer, questionServer } from './helpers.mjs';
@@ -682,4 +683,38 @@ test('webhooks --cooldown "" is a usage error, not a request that clears the coo
   const negative = run(['webhooks', 'update', 'wh-1', '--cooldown', '-1', '--room', 'ab12cd', '--token', TOKEN]);
   assert.equal(negative.status, 2);
   assert.match(negative.stderr, /--cooldown must be at least 0/);
+});
+
+test('attachment get --out never overwrites or writes through a link without --force', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pingroom-att-'));
+  const { server, baseUrl } = await startServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); res.end('NEW'); });
+  const get = (out, ...extra) => runAsync(['attachment', 'get', 'att-1', '--out', out, ...extra, '--token', 'tok', '--api', baseUrl]);
+  try {
+    const fresh = join(dir, 'fresh.bin');
+    assert.equal((await get(fresh)).status, 0);
+    assert.equal(readFileSync(fresh, 'utf8'), 'NEW');
+
+    const existing = join(dir, 'existing.bin');
+    writeFileSync(existing, 'OLD');
+    const refused = await get(existing);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /already exists; pass --force/);
+    assert.equal(readFileSync(existing, 'utf8'), 'OLD');
+    assert.equal((await get(existing, '--force')).status, 0);
+    assert.equal(readFileSync(existing, 'utf8'), 'NEW');
+
+    // --force replaces a link; it never writes through to the link's target.
+    const victim = join(dir, 'victim.txt');
+    writeFileSync(victim, 'KEEP');
+    const link = join(dir, 'link.bin');
+    symlinkSync(victim, link);
+    assert.equal((await get(link)).status, 2);
+    assert.equal((await get(link, '--force')).status, 0);
+    assert.equal(readFileSync(victim, 'utf8'), 'KEEP');
+
+    assert.equal((await get(dir)).status, 2);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

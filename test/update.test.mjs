@@ -15,7 +15,7 @@ async function check(t, args, overrides = {}) {
   t.mock.method(process.stdout, 'write', (value) => { output += value; return true; });
   const code = await update({ _: [], json: true, ...args }, {
     currentVersion: '0.10.3', latestVersion: async () => '0.11.0',
-    installKind: async () => 'npm', install: async (version) => installed.push(version), ...overrides,
+    installKind: async () => 'npm', releaseHold: async () => null, install: async (version) => installed.push(version), ...overrides,
   });
   return { code, body: JSON.parse(output), installed };
 }
@@ -197,4 +197,20 @@ test('update help works offline and describes check and JSON', () => {
   assert.match(result.stdout, /^update \(alias: upgrade\):/);
   assert.match(result.stdout, /--check/);
   assert.match(result.stdout, /--json/);
+});
+
+test('update says when min-release-age holds the newest release, and installs nothing', async (t) => {
+  const result = await check(t, {}, { releaseHold: async () => '2026-12-01T10:00:00.000Z' });
+  assert.equal(result.code, 1);
+  assert.equal(result.body.error_code, 'release_age');
+  assert.equal(result.body.held_until, '2026-12-01T10:00:00.000Z');
+  assert.equal(result.body.command, 'npm install --global @pingroom/cli@0.11.0 --min-release-age=0');
+  assert.match(result.body.error, /until 2026-12-01/);
+  assert.deepEqual(result.installed, []);
+});
+test('update --check reports the hold without failing', async (t) => {
+  const result = await check(t, { check: true }, { releaseHold: async () => '2026-12-01T10:00:00.000Z' });
+  assert.equal(result.code, 0);
+  assert.equal(result.body.update_available, true);
+  assert.equal(result.body.held_until, '2026-12-01T10:00:00.000Z');
 });

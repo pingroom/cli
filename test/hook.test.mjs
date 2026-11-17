@@ -810,3 +810,39 @@ test('the hook defers with a secret-free reason when fetch refuses the request',
   assert.match(out.permissionDecisionReason, /network error/);
   assert.doesNotMatch(stdout, /TOKENSECRET/);
 });
+
+// The prompt reaches every room member's push, the outgoing webhook and the
+// Telegram mirror. A command that spells out a credential stays local.
+test('hook PreToolUse keeps a command that contains a credential off the phone', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: { id: 'q_s', state: 'pending' } }),
+    'GET /api/agent/questions/q_s/wait': () => ({ status: 200, body: { id: 'q_s', state: 'answered', answer: { value: 'allow' } } }),
+  });
+  const ask = (command) => runHook(
+    ['--api', baseUrl], { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } },
+    { PINGROOM_TOKEN: 'tok', PINGROOM_ROOM: 'ab12cd' },
+  );
+  try {
+    for (const command of [
+      'curl -H "Authorization: Bearer sk-abc123456789012345" https://example.com',
+      'PGPASSWORD=hunter22 psql -c "select 1"',
+      'git clone https://user:pass1234@github.com/x/y',
+      'mysql --password=hunter22 app',
+      'echo ghp_abcdefghijklmnopqrstuvwx',
+    ]) {
+      const { status, stdout } = await ask(command);
+      assert.equal(status, 0);
+      const decision = JSON.parse(stdout).hookSpecificOutput;
+      assert.equal(decision.permissionDecision, 'ask', command);
+      assert.match(decision.permissionDecisionReason, /appears to contain a credential/);
+    }
+    assert.equal(received.length, 0, 'nothing that looks like a credential may be sent');
+
+    // A reference is not a credential and still goes to the phone.
+    const referenced = await ask('curl -H "Authorization: Bearer $TOKEN" https://example.com');
+    assert.equal(JSON.parse(referenced.stdout).hookSpecificOutput.permissionDecision, 'allow');
+    assert.equal(received.filter((r) => r.method === 'POST').length, 1);
+  } finally {
+    server.close();
+  }
+});
