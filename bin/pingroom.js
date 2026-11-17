@@ -7,42 +7,18 @@
 // this help; not connected -> the pairing picker. There is deliberately no
 // `login` subcommand.
 //
-// Commands:
-//   ping     Send a ping to a room. Webhook mode (a room URL carries its own
-//            secret — best for CI) or agent-token mode (Bearer + room code).
-//   ask      Ask a human a question in a room and, with --wait, block until they
-//            tap an answer — turning a human decision into a shell gate.
-//   watch    Block until a question resolves and print the outcome.
-//   list     List the agent's questions by state.
-//   cancel   Withdraw a pending question.
-//   handoff  Hand a decision to a specific human (ack or question) and, with
-//            --wait, block until they acknowledge / answer.
-//   handoffs List the agent's open handoffs or bounded recent history.
-//   listen   Long-poll for pings arriving in the agent's rooms.
-//   metric   List, set, or delete a room's metrics: named values a widget shows.
-//   live     Drive a live progress card (iOS Live Activity / Android live
-//            update) on the room members' lock screen: start / update / end.
-//   bot      Claim, ack, extend and finish the Grok Bot mailbox events a
-//            PingRoom bot connection holds for its routine.
-//   mcp      Print the canonical remote MCP endpoint and client setup snippets.
-//   skills   List the published agent skills, or install them for Claude Code.
-//   redeem   Redeem a gifted or promotional Pro code for the connected account.
-//   activate Send one optional test Question with the saved QR-paired credential.
-//   config   Read/write ~/.pingroom/config.json (default_room, api_url).
-//   logout   Forget the credential in ~/.pingroom/credentials.json.
-//
 // Exit codes: 0 success/answered/acked · 1 error · 2 bad usage · 3 expired ·
 // 4 cancelled/recipient-not-ready · 5 `bot done` returned more events.
 //
 // This file is the entry point only: the dispatch table, main(), and the
 // top-level catch. Everything it calls lives under lib/ — see lib/help.js for
-// the --help text, lib/parser.js for the flag vocabulary, and lib/commands/*
+// the command list and every --help text, lib/parser.js for the flag vocabulary, and lib/commands/*
 // for one module per command.
 
 import { EXIT } from '../lib/constants.js';
 import { CliExit, fail, stripControlChars } from '../lib/util.js';
 import { VERSION } from '../lib/version.js';
-import { HELP } from '../lib/help.js';
+import { HELP, HELP_SHORT, HELP_TOPICS } from '../lib/help.js';
 import { maybeNotifyUpdate } from '../lib/update-check.js';
 import { retryPendingRevocations } from '../lib/credential-recovery.js';
 import {
@@ -85,6 +61,7 @@ const COMMANDS = {
   mcp,
   skills: (rest) => skills(parseSkillsArgs(rest)),
   update: (rest) => update(parseUpdateArgs(rest)),
+  upgrade: (rest) => update(parseUpdateArgs(rest)),
   redeem: (rest) => redeem(parseRedeemArgs(rest)),
   activate: (rest) => activateStoredInbox(parseQArgs(rest)),
   live: (rest) => live(parseLiveArgs(rest)),
@@ -108,6 +85,16 @@ const RECOVERY_COMMANDS = new Set([
   'approval', 'attachment', 'bot', 'pair', 'reconnect',
 ]);
 
+// A reader that stops early (`pingroom --help | head`, quitting a pager) closes
+// the pipe. That is the reader's choice, not a failure of this tool: leave
+// quietly instead of dying on an unhandled EPIPE with a stack trace.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (error) => {
+    if (error?.code === 'EPIPE') process.exit(EXIT.OK);
+    throw error;
+  });
+}
+
 async function exitAfterOutput(code) {
   // stdout/stderr may be asynchronous pipes. Drain queued output before the
   // explicit exit, which also closes stdin left open by a pairing prompt.
@@ -121,8 +108,21 @@ async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
 
-  if (command === '-h' || command === '--help' || command === 'help') {
-    process.stdout.write(`${HELP}\n`);
+  if (command === '-h' || command === '--help') {
+    process.stdout.write(`${HELP_SHORT}\n`);
+    return exitAfterOutput(EXIT.OK);
+  }
+
+  // `help` alone is --help; `help all` is the whole reference; `help <topic>`
+  // and `help <command>` print that one section.
+  if (command === 'help') {
+    const subject = argv[1];
+    if (argv.length > 2) fail('Usage: pingroom help [all | <command> | <topic>]', EXIT.USAGE);
+    if (subject === undefined) process.stdout.write(`${HELP_SHORT}\n`);
+    else if (subject === 'all') process.stdout.write(`${HELP}\n`);
+    else if (Object.hasOwn(HELP_TOPICS, subject)) process.stdout.write(`${HELP_TOPICS[subject]}\n`);
+    else if (Object.hasOwn(COMMANDS, subject)) return exitAfterOutput(await COMMANDS[subject](['--help']));
+    else fail(`no help for "${stripControlChars(subject)}". Topics: all, ${Object.keys(HELP_TOPICS).join(', ')}, or a command from "pingroom --help".`, EXIT.USAGE);
     return exitAfterOutput(EXIT.OK);
   }
 
@@ -157,7 +157,7 @@ async function main() {
   const code = await handler(argv.slice(1));
   // After the command's own output, never before, and never in place of it:
   // the notice is advisory and must not lead. It cannot alter `code`.
-  if (command !== 'update' && command !== 'run') await maybeNotifyUpdate(VERSION);
+  if (command !== 'update' && command !== 'upgrade' && command !== 'run') await maybeNotifyUpdate(VERSION);
   return exitAfterOutput(code);
 }
 

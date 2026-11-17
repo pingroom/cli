@@ -17,7 +17,7 @@ test('bare pingroom prints the connected status, old-server latest-pings fallbac
     assert.match(stdout, /Robot @agt_ab12cd34ef is connected · home #Project X/);
     assert.match(stdout, /Latest pings API: https:\/\/api\.pingroom\.io\/api\/agent\/notifications\?limit=25&page=1/);
     assert.match(stdout, /Default room: ABC123/);
-    assert.match(stdout, /pingroom — send a ping/);
+    assert.match(stdout, /pingroom: reach a human/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -80,7 +80,7 @@ test('non-TTY: bare pingroom never prompts or draws a QR, and points at PINGROOM
   assert.equal(status, 0);
   assert.match(stderr, /not connected/);
   assert.match(stderr, /PINGROOM_TOKEN/);
-  assert.match(stdout, /pingroom — send a ping/);
+  assert.match(stdout, /pingroom: reach a human/);
   assert.doesNotMatch(stdout, /[█▄▀]/);
   assert.doesNotMatch(stdout, /Choose \[1\]/);
 });

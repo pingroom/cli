@@ -44,6 +44,7 @@ export const COMMAND_SCOPES = {
   mcp: [],
   skills: [],
   update: [],
+  upgrade: [],
   config: [],
   logout: [],
   // reconnect and pair mint their own pre-claim credential and only touch the

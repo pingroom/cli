@@ -80,7 +80,8 @@ test('per-command help does not advertise -v, which only works at the top level'
     assert.match(stderr, /Unknown option: -v/);
   }
   // The top level still documents the working spelling, and says where it works.
-  const top = run(['--help']).stdout;
+  assert.match(run(['--help']).stdout, /^  pingroom -v\s+Version$/m);
+  const top = run(['help', 'all']).stdout;
   assert.match(top, /-v, --version\s+Show the CLI version \(first argument only: pingroom -v\)/);
   assert.equal(run(['-v']).stdout.trim(), pkg.version);
 });

@@ -17,7 +17,7 @@ test('exit 0: ping -h prints the ping-focused help, not the full reference', () 
   assert.match(stdout, /--location <lat,lng>/);
   assert.match(stdout, /--item <text>/);
   assert.match(stdout, /Shared:/);
-  assert.doesNotMatch(stdout, /pingroom — send a ping/);
+  assert.doesNotMatch(stdout, /pingroom: reach a human/);
   assert.doesNotMatch(stdout, /ask options/);
   assert.doesNotMatch(stdout, /Exit codes: 0 on success/);
 });
@@ -671,7 +671,7 @@ test('exit 1: network error (connection refused)', () => {
 // ---------------------------------------------------------------------------
 
 test('help advertises the attachment type, size, and count contract', () => {
-  const { status, stdout } = run(['--help']);
+  const { status, stdout } = run(['ping', '--help']);
   assert.equal(status, 0);
   assert.match(stdout, /md\/pdf\/html\/txt\/jpg\/jpeg\/png\/zip, <= 5 MiB/);
   assert.match(stdout, /repeat for up to 4/);

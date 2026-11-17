@@ -49,7 +49,7 @@ test('metric --help names its verbs and appears in the top-level help', () => {
   assert.match(one.stdout, new RegExp(`at most ${METRIC_MAX_PER_ROOM}`));
 
   const all = run(['--help']);
-  assert.match(all.stdout, /^ {2}metric {3}List, set, or delete/m);
+  assert.match(all.stdout, /^ {2}metric {6}Set a room metric/m);
 });
 
 // --- the client-side rules ---------------------------------------------------

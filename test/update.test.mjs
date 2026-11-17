@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { update } from '../lib/commands/update.js';
+import { explainNpmFailure, installerFromPath, update } from '../lib/commands/update.js';
 import { parseUpdateArgs } from '../lib/parser.js';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +15,7 @@ async function check(t, args, overrides = {}) {
   t.mock.method(process.stdout, 'write', (value) => { output += value; return true; });
   const code = await update({ _: [], json: true, ...args }, {
     currentVersion: '0.10.3', latestVersion: async () => '0.11.0',
-    isGlobalInstall: async () => true, install: async (version) => installed.push(version), ...overrides,
+    installKind: async () => 'npm', install: async (version) => installed.push(version), ...overrides,
   });
   return { code, body: JSON.parse(output), installed };
 }
@@ -53,11 +53,62 @@ for (const latest of ['1.0.0-beta.1', '1.0.0;touch bad', null, {}]) {
     assert.deepEqual(result.installed, []);
   });
 }
-test('update refuses local, npx, and linked source installations', async (t) => {
-  const result = await check(t, {}, { isGlobalInstall: async () => false });
-  assert.equal(result.code, 2);
-  assert.match(result.body.error, /requires an npm global installation/);
-  assert.deepEqual(result.installed, []);
+for (const [kind, command] of [
+  ['npx', 'npx --yes @pingroom/cli@latest'],
+  ['pnpm', 'pnpm add --global @pingroom/cli@0.11.0'],
+  ['bun', 'bun add --global @pingroom/cli@0.11.0'],
+  ['yarn', 'yarn global add @pingroom/cli@0.11.0'],
+  ['volta', 'volta install @pingroom/cli@0.11.0'],
+  ['source', 'git pull'],
+  ['local', 'npm install @pingroom/cli@0.11.0'],
+]) {
+  test(`update leaves a ${kind} install alone and names the command that updates it`, async (t) => {
+    const result = await check(t, {}, { installKind: async () => kind });
+    assert.equal(result.code, 2);
+    assert.equal(result.body.install, kind);
+    assert.equal(result.body.command, command);
+    assert.ok(result.body.error.includes(command));
+    assert.equal(result.body.updated, false);
+    assert.deepEqual(result.installed, []);
+  });
+}
+test('the installer is read from the path each tool installs to', () => {
+  assert.equal(installerFromPath('/Users/a/.npm/_npx/007ca3d07bf3d050/node_modules/@pingroom/cli/'), 'npx');
+  assert.equal(installerFromPath('/Users/a/Library/pnpm/global/5/.pnpm/@pingroom+cli@0.16.0/node_modules/@pingroom/cli/'), 'pnpm');
+  assert.equal(installerFromPath('/Users/a/.bun/install/global/node_modules/@pingroom/cli/'), 'bun');
+  assert.equal(installerFromPath('/home/a/.config/yarn/global/node_modules/@pingroom/cli/'), 'yarn');
+  assert.equal(installerFromPath('C:\\Users\\a\\AppData\\Local\\Yarn\\Data\\global\\node_modules\\@pingroom\\cli\\'), 'yarn');
+  assert.equal(installerFromPath('/Users/a/.volta/tools/image/packages/@pingroom/cli/lib/node_modules/@pingroom/cli/'), 'volta');
+  // npm global, a project dependency (pnpm's included) and a checkout share no marker.
+  assert.equal(installerFromPath('/opt/homebrew/lib/node_modules/@pingroom/cli/'), null);
+  assert.equal(installerFromPath('/work/app/node_modules/.pnpm/@pingroom+cli@0.16.0/node_modules/@pingroom/cli/'), null);
+  assert.equal(installerFromPath('/work/pingroom/cli/'), null);
+});
+const npmError = (code, extra = {}) => Object.assign(new Error('Command failed: npm secret-token'), {
+  cmd: 'npm install', stderr: `npm error code ${code}\nnpm error secret-token\n`, ...extra,
+});
+for (const [error, code, command] of [
+  [npmError('ETARGET'), 'release_age', 'npm install --global @pingroom/cli@0.11.0 --min-release-age=0'],
+  [npmError('EACCES'), 'permission', process.platform === 'win32' ? 'npm install --global @pingroom/cli@0.11.0' : 'sudo npm install --global @pingroom/cli@0.11.0'],
+  [npmError('E401'), 'registry_auth', undefined],
+  [npmError('ENOTFOUND'), 'network', undefined],
+  [npmError('ESOMETHING', { killed: true }), 'timeout', 'npm install --global @pingroom/cli@0.11.0'],
+  [npmError('EWHATEVER'), 'npm_failed', 'npm install --global @pingroom/cli@0.11.0'],
+  [Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }), 'npm_missing', undefined],
+]) {
+  test(`a failed install says why and what to run: ${code}`, async (t) => {
+    const result = await check(t, {}, { install: async () => { throw error; } });
+    assert.equal(result.code, 1);
+    assert.equal(result.body.error_code, code);
+    assert.equal(result.body.command, command);
+    if (command) assert.ok(result.body.error.includes(command));
+    assert.equal(result.body.updated, false);
+    assert.doesNotMatch(JSON.stringify(result.body), /secret-token/);
+  });
+}
+test('a failed version lookup points at the latest tag, not at "undefined"', () => {
+  const failure = explainNpmFailure(npmError('EWHATEVER'), undefined);
+  assert.equal(failure.command, 'npm install --global @pingroom/cli@latest');
 });
 test('failed npm install returns failure without claiming success or exposing npm output', async (t) => {
   const result = await check(t, {}, { install: async () => { throw Object.assign(new Error('secret-token'), { cmd: 'npm', stderr: 'secret-token' }); } });
@@ -143,7 +194,7 @@ test('the update check stays silent and writes nothing when stdout is not a TTY'
 test('update help works offline and describes check and JSON', () => {
   const result = run(['update', '--help']);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /^update options:/);
+  assert.match(result.stdout, /^update \(alias: upgrade\):/);
   assert.match(result.stdout, /--check/);
   assert.match(result.stdout, /--json/);
 });

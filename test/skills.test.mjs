@@ -24,8 +24,8 @@ test('skills lists both published skills and every install route', () => {
 test('skills is registered in the top-level help', () => {
   const { status, stdout } = run(['--help']);
   assert.equal(status, 0);
-  assert.match(stdout, /^  skills   List the PingRoom agent skills/m);
-  assert.match(stdout, /^skills:$/m);
+  assert.match(stdout, /^  skills      List or install the PingRoom agent skills/m);
+  assert.match(run(['help', 'all']).stdout, /^skills:$/m);
 });
 
 test('skills --help does not advertise credential flags it cannot use', () => {

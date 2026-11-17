@@ -295,5 +295,5 @@ test('bot --help prints its section, documents the done exit code, and reaches e
     assert.match(stdout, /exits 5/);
     assert.match(stdout, /PingRoom bot connection/);
   }
-  assert.match(run(['--help']).stdout, /^ {2}bot {6}Read and answer the Grok Bot mailbox/m);
+  assert.match(run(['--help']).stdout, /^ {2}bot {9}Work the mailbox of a PingRoom bot connection/m);
 });

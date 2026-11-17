@@ -4,7 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { HELP } from '../lib/help.js';
+import { spawnSync } from 'node:child_process';
+import { HELP, HELP_SHORT, HELP_TOPICS, commandHelp } from '../lib/help.js';
 import { CLI, run, runAsync, startServer, questionServer, newHome, flakyPairingServer } from './helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -24,14 +25,57 @@ test('the published tarball carries every directory the entry point imports', ()
 test('exit 0: no command prints help', () => {
   const { status, stdout } = run([]);
   assert.equal(status, 0);
-  assert.match(stdout, /pingroom — send a ping/);
+  assert.match(stdout, /pingroom: reach a human/);
 });
 
-test('exit 0: --help prints help', () => {
+test('exit 0: --help prints the short overview', () => {
+  const { status, stdout } = run(['--help']);
+  assert.equal(status, 0);
+  assert.equal(stdout, `${HELP_SHORT}\n`);
+});
+
+// The top-level help once ran to 480 lines. It is an index: a section that
+// needs more room belongs in that command's --help or a topic.
+test('the overview fits on one screen and names every dispatched command', () => {
+  assert.ok(HELP_SHORT.split('\n').length <= 60, 'keep pingroom --help under 60 lines');
+  const source = readFileSync(new URL('../bin/pingroom.js', import.meta.url), 'utf8');
+  const table = source.slice(source.indexOf('const COMMANDS = {'), source.indexOf('\n};', source.indexOf('const COMMANDS = {')));
+  const dispatched = [...table.matchAll(/^\s{2}([a-z]+)[:,]/gm)].map((m) => m[1]);
+  assert.ok(dispatched.length >= 22);
+  // Aliases are named beside the command they stand for, not on a row of their own.
+  const aliases = new Set(['await', 'upgrade']);
+  for (const command of dispatched) {
+    if (aliases.has(command)) continue;
+    assert.match(HELP_SHORT, new RegExp(`^  ${command} `, 'm'), `${command} is missing from pingroom --help`);
+    assert.notEqual(commandHelp(command), HELP_SHORT, `${command} has no --help section`);
+  }
+  assert.match(HELP_SHORT, /alias: await/);
+});
+
+test('exit 0: "help all" prints the whole reference, flushed in full through a pipe', () => {
   // HELP names the default API, which a PINGROOM_API_URL in the child changes.
-  const { status, stdout } = run(['--help'], { PINGROOM_API_URL: undefined });
+  const { status, stdout } = run(['help', 'all'], { PINGROOM_API_URL: undefined });
   assert.equal(status, 0);
   assert.equal(stdout, `${HELP}\n`, 'piped help must be flushed in full before exiting');
+});
+
+test('help <command> and help <topic> print that one section', () => {
+  assert.equal(run(['help', 'ping']).stdout, run(['ping', '--help']).stdout);
+  assert.equal(run(['help', 'mcp']).stdout, run(['mcp', '--help']).stdout);
+  for (const [topic, text] of Object.entries(HELP_TOPICS)) {
+    assert.equal(run(['help', topic]).stdout, `${text}\n`, topic);
+  }
+  const unknown = run(['help', 'nope']);
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /no help for "nope"/);
+  assert.equal(run(['help', 'ping', 'extra']).status, 2);
+});
+
+test('a reader that closes the pipe early ends the CLI quietly', () => {
+  const result = spawnSync('sh', ['-c', `"${process.execPath}" "${CLI}" help all | head -n 1`], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'pingroom: reach a human from CI, scripts and agents\n');
+  assert.equal(result.stderr, '');
 });
 
 test('exit 0: -h prints help', () => {
@@ -136,14 +180,14 @@ test('exit 1: invalid UTF-8 from the API is rejected before command parsing', as
 });
 
 test('help documents the credential store, the precedence, and the absence of a login command', () => {
-  const { stdout } = run(['--help']);
+  const { stdout } = run(['help', 'connecting']);
   assert.match(stdout, /~\/\.pingroom\/credentials\.json/);
   assert.match(stdout, /PINGROOM_HOME/);
   // The paired credential is a real layer, not a dead field: resolveApiBase and
   // resolveRoom both consult it, so the documented chain has to name it.
   assert.match(stdout, /explicit flag\s+>\s+env var\s+>\s+~\/\.pingroom\/config\.json\s+>\s+the paired\s+credential\s+>\s+built-in default/);
   assert.match(stdout, /There is no "login" command/);
-  assert.match(stdout, /^  activate /m);
+  assert.match(run(['--help']).stdout, /^  activate /m);
   // Connecting sends nothing to the phone, and the help has to say so — the
   // optional test Question is what "activate" is for.
   assert.match(stdout, /connecting sends nothing to your phone/);
@@ -152,8 +196,6 @@ test('help documents the credential store, the precedence, and the absence of a 
   assert.match(stdout, /urgent Pings, questions, approvals, handoffs, and live progress/);
   assert.match(stdout, /Installing the app does not claim a robot or grant it access/);
   assert.match(stdout, /keep it running and reuse its claim link/);
-  assert.match(stdout, /^  config   /m);
-  assert.match(stdout, /^  logout   /m);
   assert.match(stdout, /stored credential is bound to the origin it was paired\s+against/);
   assert.match(stdout, /provide that host's token with --token or PINGROOM_TOKEN/);
 });

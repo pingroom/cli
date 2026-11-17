@@ -320,7 +320,7 @@ test('pair rejects positionals and credential flags', async () => {
 test('pair is in the top-level help and its own help omits credential flags', () => {
   const top = run(['--help']);
   assert.equal(top.status, 0);
-  assert.match(top.stdout, /^ {2}pair {5}Pair without a terminal/m);
+  assert.match(top.stdout, /^ {2}pair {8}Pair without a terminal/m);
 
   const own = run(['pair', '--help']);
   assert.equal(own.status, 0);

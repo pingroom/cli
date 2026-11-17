@@ -139,7 +139,10 @@ For containers and daemons, use [headless pairing](#headless-pairing-daemons-con
 | Set up an agent | `skills`, `mcp`, `hook` | [Skills](#agent-skills) · [MCP](#mcp-client-setup) · [Hooks](#claude-code-integration-get-pinged-by-your-agent) |
 | Maintain the CLI | `update`, `redeem` | [Updates](#update-the-cli) · [Gift codes](#redeem-a-gift-or-promotional-code) |
 
-Run `pingroom --help` or `pingroom <command> --help` for the full reference.
+`pingroom --help` lists the commands on one screen. `pingroom <command> --help`
+(or `pingroom help <command>`) prints one command's options, `pingroom help
+<topic>` prints `connecting`, `examples`, `security` or `exit-codes`, and
+`pingroom help all` prints everything on one page.
 
 ## Command completion
 
@@ -1476,14 +1479,30 @@ check your account plan before retrying after an interrupted response.
 
 ## Update the CLI
 
-Run `pingroom update` to install the latest stable release into the current npm
-global installation. `pingroom update --check` checks without installing; add
-`--json` for a single machine-readable result. It preserves the saved connection
-and respects your npm registry and minimum release age settings. It returns a
-nonzero exit code if npm fails or the install cannot be verified.
+Run `pingroom update` (or `pingroom upgrade`) to install the latest stable
+release into the current npm global installation. `pingroom update --check`
+checks without installing; add `--json` for a single machine-readable result. It
+preserves the saved connection and respects your npm registry and minimum
+release age settings. It returns a nonzero exit code if npm fails or the install
+cannot be verified.
 
-For a project dependency, use `npm install @pingroom/cli@latest` in that project.
-For npx, use `npx @pingroom/cli@latest`. Source checkouts use git.
+When npm refuses, the command says why and prints the line to run. The JSON
+result carries the same in `error_code` and, when there is one, `command`:
+
+| `error_code` | Cause | `command` |
+|---|---|---|
+| `release_age` | `min-release-age` or `before` in your npm config holds the release back | the install with `--min-release-age=0` |
+| `permission` | npm may not write to its global directory | the install under `sudo` (plain on Windows, for an Administrator terminal) |
+| `registry_auth` | the registry answered 401 or 403 | none |
+| `network` | the registry could not be reached | none |
+| `timeout` | npm did not finish in time | the plain install |
+| `npm_missing` | `npm` is not on `PATH` | none |
+| `npm_failed` | anything else | the plain install, to see npm's own error |
+
+A copy installed another way is left alone. The command exits 2, names how it
+was installed in `install` (`npx`, `pnpm`, `bun`, `yarn`, `volta`, `local` for
+a project dependency, `source` for a checkout) and prints the one line that
+updates it, such as `pnpm add --global @pingroom/cli@<version>`.
 
 ## Update notifications
 
