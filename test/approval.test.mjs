@@ -239,6 +239,44 @@ test('ask --wait is a gate on an approve/deny question and plain on any other', 
   }
 });
 
+test('approve/deny polls keep answered exit 0, while a direct fallback still denies', async () => {
+  for (const [resolution_policy, value, code] of [
+    ['all', 'deny', 0],
+    ['all', null, 0],
+    ['first', 'deny', 4],
+  ]) {
+    const { server, baseUrl, received } = await questionServer({
+      'POST /api/agent/rooms/ab12cd/questions': () => ({ status: 201, body: {
+        id: 'q_poll', state: 'pending', resolution_policy,
+      } }),
+      'GET /api/agent/questions/q_poll/wait': () => ({ status: 200, body: {
+        id: 'q_poll', state: 'answered', resolution_policy,
+        options: APPROVE_DENY_WIRE, answer: value === null ? null : { value },
+        results: resolution_policy === 'all' ? { response_count: 2, audience_count: 2, options: [
+          { value: 'approve', count: value === null ? 1 : 0 },
+          { value: 'deny', count: value === null ? 1 : 2 },
+        ] } : null,
+      } }),
+    });
+    try {
+      // Check both creation and resuming the same Question: policy comes from
+      // the receipt, not from the local --poll flag or option names.
+      for (const args of [['ask', '--poll', '--wait', '-p', 'Vote?'], ['watch', 'q_poll']]) {
+        const result = await runAsync([...args, '--token', 'tok', '--api', baseUrl,
+          ...(args[0] === 'ask' ? ['--room', 'ab12cd'] : [])]);
+        assert.equal(result.status, code, `${args[0]} ${resolution_policy} ${value}`);
+        assert.equal(result.stdout, value === null ? '' : `${value}\n`);
+        if (value === null) assert.match(result.stderr, /poll tied/);
+        if (resolution_policy === 'first' && args[0] === 'ask') assert.match(result.stderr, /direct, first-answer/);
+      }
+      assert.equal(received.filter((request) => request.method === 'POST').length, 1);
+      assert.equal(JSON.parse(received[0].body).resolution_policy, 'all');
+    } finally {
+      server.close();
+    }
+  }
+});
+
 test('409 recipient_not_ready exits 4 on every send, as the exit-code help says', async () => {
   const notReady = () => ({ status: 409, body: { code: 'recipient_not_ready', message: 'No phone yet.' } });
   const { server, baseUrl } = await questionServer({

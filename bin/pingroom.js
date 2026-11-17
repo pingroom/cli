@@ -86,17 +86,19 @@ const RECOVERY_COMMANDS = new Set([
   'approval', 'attachment', 'bot', 'pair', 'reconnect',
 ]);
 
-// A reader that stops early (`pingroom --help | head`, quitting a pager) closes
-// the pipe. That is the reader's choice, not a failure of this tool: leave
-// quietly instead of dying on an unhandled EPIPE with a stack trace.
+// A closed reader must not turn a denied gate or a failed command into success.
+// Once the command finishes, keep its exit code; before that, fail closed.
+// Help still exits quietly when its reader stops early.
+let outputExitCode = EXIT.ERROR;
 for (const stream of [process.stdout, process.stderr]) {
   stream.on('error', (error) => {
-    if (error?.code === 'EPIPE') process.exit(EXIT.OK);
+    if (error?.code === 'EPIPE') process.exit(outputExitCode);
     throw error;
   });
 }
 
 async function exitAfterOutput(code) {
+  outputExitCode = code;
   // stdout/stderr may be asynchronous pipes. Drain queued output before the
   // explicit exit, which also closes stdin left open by a pairing prompt.
   await Promise.all([process.stdout, process.stderr].map((stream) => (

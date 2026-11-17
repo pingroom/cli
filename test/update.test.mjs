@@ -160,6 +160,61 @@ else if (args[0] === 'install') {
   assert.equal(JSON.parse(readFileSync(manifest)).version, '0.11.0');
 });
 
+for (const scenario of [
+  { name: 'an ordinary release-age hold prevents installation', exclude: '', check: false, refused: false, status: 1, install: false, held: true },
+  { name: 'a configured exclusion lets npm install the release', exclude: '@pingroom/*', check: false, refused: false, status: 0, install: true, held: false },
+  { name: 'npm can still refuse when an exclusion does not apply', exclude: '@other/*', check: false, refused: true, status: 1, install: true, held: false },
+  { name: 'check does not claim a hold when npm exclusions are configured', exclude: '@pingroom/*', check: true, refused: false, status: 0, install: false, held: false },
+]) {
+  test(`release policy: ${scenario.name}`, { skip: process.platform === 'win32' }, (t) => {
+    const directory = mkdtempSync(join(tmpdir(), 'pingroom-update-policy-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const source = fileURLToPath(new URL('..', import.meta.url));
+    const globalRoot = join(directory, 'lib', 'node_modules');
+    const installed = join(globalRoot, '@pingroom', 'cli');
+    mkdirSync(installed, { recursive: true });
+    for (const name of ['bin', 'lib']) cpSync(join(source, name), join(installed, name), { recursive: true });
+    symlinkSync(join(source, 'node_modules'), join(installed, 'node_modules'), 'dir');
+    const manifest = join(installed, 'package.json');
+    const pkg = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'));
+    writeFileSync(manifest, JSON.stringify({ ...pkg, version: '0.0.1' }));
+    const bin = join(directory, 'bin');
+    mkdirSync(bin);
+    const receipt = join(directory, 'npm-install-args.json');
+    writeFileSync(join(bin, 'npm'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === 'config' && args[2] === 'min-release-age') console.log('30');
+else if (args[0] === 'config' && args[2] === 'min-release-age-exclude') console.log(${JSON.stringify(scenario.exclude)});
+else if (args[0] === 'view' && args[2] === 'time') console.log(JSON.stringify({ '0.11.0': new Date().toISOString() }));
+else if (args[0] === 'view') console.log(JSON.stringify('0.11.0'));
+else if (args[0] === 'root') console.log(${JSON.stringify(globalRoot)});
+else if (args[0] === 'install') {
+  fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(args));
+  if (${scenario.refused}) { console.error('npm error code ETARGET'); process.exit(1); }
+  const file = ${JSON.stringify(manifest)};
+  const pkg = JSON.parse(fs.readFileSync(file));
+  pkg.version = '0.11.0';
+  fs.writeFileSync(file, JSON.stringify(pkg));
+} else process.exit(1);
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, [join(installed, 'bin', 'pingroom.js'), 'update', '--json', ...(scenario.check ? ['--check'] : [])], {
+      encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PINGROOM_HOME: join(directory, 'config'), PINGROOM_NO_UPDATE_CHECK: '1' },
+    });
+    assert.equal(result.status, scenario.status, result.stderr || result.stdout);
+    const body = JSON.parse(result.stdout);
+    assert.equal(Object.hasOwn(body, 'held_until'), scenario.held);
+    assert.equal(body.updated, scenario.install && !scenario.refused);
+    assert.equal(existsSync(receipt), scenario.install);
+    if (scenario.install) {
+      assert.deepEqual(JSON.parse(readFileSync(receipt)), ['install', '--global', '@pingroom/cli@0.11.0', '--no-fund', '--no-audit']);
+    }
+    if (scenario.refused || scenario.held) assert.equal(body.error_code, 'release_age');
+    assert.equal(JSON.parse(readFileSync(manifest)).version, body.updated ? '0.11.0' : '0.0.1');
+  });
+}
+
 // --------------------------------------------------- update notification
 
 test('isNewer only upgrades on a strictly greater release number', async () => {
