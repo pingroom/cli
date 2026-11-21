@@ -79,8 +79,16 @@ The CLI skill handles shell commands and CI; the
 pingroom skills install
 ```
 
-This needs Git and copies both skills into `~/.claude/skills/`. Existing skills
-are preserved unless you pass `--force`; `--dir <path>` changes the destination.
+This copies both skills, which ship inside the CLI package, into
+`~/.claude/skills/`, so it needs neither Git nor the network, and the CLI skill
+always matches the CLI you run. Existing skills are preserved unless you pass
+`--force`; `--dir <path>` changes the destination; `--latest` fetches the
+newest copies from GitHub instead (this one needs Git).
+
+**Any other agent:** `pingroom skills show` prints the CLI skill to stdout, so an
+agent in any shell can read how to use every command without installing
+anything. `pingroom skills show pingroom-mcp` prints the MCP skill, and
+`pingroom skills show pingroom-mcp references/tools.md` its tool reference.
 The MCP plugin also configures the hosted server; authorize it through `/mcp`.
 The CLI skill uses your [paired CLI connection](#connecting).
 

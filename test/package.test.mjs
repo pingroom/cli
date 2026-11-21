@@ -61,6 +61,10 @@ test('the tarball includes the shrinkwrap and no test file', () => {
   const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
   assert.ok(files.includes('npm-shrinkwrap.json'));
   assert.ok(files.includes('bin/pingroom.js'));
+  // `skills show` and `skills install` read these from the installed package.
+  for (const file of ['skills/pingroom-cli/SKILL.md', 'skills/pingroom-mcp/SKILL.md', 'skills/pingroom-mcp/references/tools.md']) {
+    assert.ok(files.includes(file), `${file} is not in the tarball`);
+  }
   assert.equal(files.some((path) => path.startsWith('test/')), false);
 });
 
