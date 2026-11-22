@@ -460,6 +460,10 @@ pipeline should hold no account credential at all.
 `pingroom skills install` copies them into `~/.claude/skills`.
 It refuses to replace a skill that is already installed — pass `--force` for
 that, or `--dir <path>` to install somewhere else. Requires CLI >= 0.8.0.
+From CLI 0.18.0 both skills ship inside the CLI: `pingroom skills show` prints
+this skill to stdout (`pingroom skills show pingroom-mcp` prints the MCP one),
+`install` copies those bundled copies with no git or network, and
+`install --latest` fetches the newest from GitHub (needs git).
 
 ## Troubleshooting
 
