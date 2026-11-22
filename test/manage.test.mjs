@@ -718,3 +718,23 @@ test('attachment get --out never overwrites or writes through a link without --f
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('every request names the CLI in its User-Agent, which is how the server labels its Pings', async () => {
+  const agents = [];
+  const { server, baseUrl } = await startServer((req, res) => {
+    agents.push(req.headers['user-agent']);
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ invite_code: 'J2YL5X5NDTUO', name: 'Deploys' }));
+    });
+  });
+  try {
+    const got = await runAsync(['rooms', 'get', 'J2YL5X5NDTUO', '--token', 'x'.repeat(40), '--api', baseUrl]);
+    assert.equal(got.status, 0, got.stderr);
+    assert.equal(agents.length, 1);
+    assert.match(agents[0], /^pingroom-cli\/\d+\.\d+\.\d+/);
+  } finally {
+    server.close();
+  }
+});
