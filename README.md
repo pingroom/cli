@@ -1138,7 +1138,7 @@ webhook workflow onto its token.
 
 `idempotency-key` follows the CLI rule: 1–255 printable ASCII characters,
 spaces allowed, so `'deploy ${{ github.sha }}'` works.
-The Action pins npm CLI **0.17.0**, which sends the key on handoffs and on
+The Action pins npm CLI **0.18.0**, which sends the key on handoffs and on
 pings over either transport, `token` or `webhook-url`.
 
 `options` is one `value:label` per line. Trailing newlines are ignored first, so
