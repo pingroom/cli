@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { run, runAsync } from './helpers.mjs';
@@ -77,12 +77,133 @@ test('skills install refuses to clobber before it touches the network', () => {
   mkdirSync(join(dir, 'pingroom-mcp'), { recursive: true });
   const { status, stderr } = run(['skills', 'install', '--dir', dir]);
   assert.equal(status, 2);
-  assert.match(stderr, /already installed/);
+  assert.match(stderr, /destination already exists/);
   assert.match(stderr, /pingroom-mcp/);
   assert.match(stderr, /--force/);
   // Nothing was created for the skill that had not been installed yet.
   assert.equal(existsSync(join(dir, 'pingroom-cli')), false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('every existing destination entry blocks both skills before writes or a clone', () => {
+  for (const skill of Object.keys(BUNDLE)) {
+    for (const kind of ['file', 'directory', 'file-link', 'dangling-link']) {
+      for (const latest of [false, true]) {
+        const root = mkdtempSync(join(tmpdir(), 'pingroom-skills-collision-'));
+        const target = join(root, 'skills');
+        const to = join(target, skill);
+        const referent = join(root, 'referent');
+        mkdirSync(target);
+        writeFileSync(referent, 'keep referent\n');
+        if (kind === 'file') writeFileSync(to, 'keep destination\n');
+        else if (kind === 'directory') mkdirSync(to);
+        else symlinkSync(kind === 'file-link' ? referent : join(root, 'missing'), to);
+        try {
+          const { status, stdout, stderr } = run(['skills', 'install', '--dir', target, ...(latest ? ['--latest'] : [])], {
+            PATH: brokenGitPath(root),
+          });
+          assert.equal(status, 2, `${skill} ${kind} latest=${latest}: ${stderr}`);
+          assert.equal(stdout, '');
+          assert.match(stderr, /destination already exists/);
+          assert.match(stderr, /--force/);
+          assert.deepEqual(readdirSync(target), [skill]);
+          assert.equal(readFileSync(referent, 'utf8'), 'keep referent\n');
+          if (kind === 'file') assert.equal(readFileSync(to, 'utf8'), 'keep destination\n');
+          else if (kind === 'directory') assert.deepEqual(readdirSync(to), []);
+          else {
+            assert.ok(lstatSync(to).isSymbolicLink());
+            assert.equal(readlinkSync(to), kind === 'file-link' ? referent : join(root, 'missing'));
+          }
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    }
+  }
+});
+
+test('destination inspection errors stop before fetching skills', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pingroom-skills-inspection-'));
+  const target = join(root, 'not-a-directory');
+  writeFileSync(target, 'keep parent\n');
+  try {
+    const { status, stdout, stderr } = run(['skills', 'install', '--latest', '--dir', target], { PATH: brokenGitPath(root) });
+    assert.equal(status, 1);
+    assert.equal(stdout, '');
+    assert.match(stderr, /ENOTDIR/);
+    assert.doesNotMatch(stderr, /git is required/);
+    assert.equal(readFileSync(target, 'utf8'), 'keep parent\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('destinations created during a latest fetch are preserved without force', () => {
+  for (const skill of Object.keys(BUNDLE)) {
+    for (const kind of ['file', 'directory']) {
+      const root = mkdtempSync(join(tmpdir(), 'pingroom-skills-late-collision-'));
+      const target = join(root, 'skills');
+      const to = join(target, skill);
+      const repo = join(root, 'repo');
+      const bin = join(root, 'bin');
+      mkdirSync(target);
+      mkdirSync(bin);
+      for (const [plugin, name] of [['cli', 'pingroom-cli'], ['mcp', 'pingroom-mcp']]) {
+        const source = join(repo, plugin, 'skills', name);
+        mkdirSync(source, { recursive: true });
+        writeFileSync(join(source, 'SKILL.md'), `fixture ${name}\n`);
+      }
+      writeFileSync(join(bin, 'git'), `#!/bin/sh
+if [ "$1" = "--version" ]; then exit 0; fi
+if [ "$1" != "clone" ]; then exit 1; fi
+for destination; do :; done
+cp -R "$SKILL_TEST_REPO/." "$destination/" || exit 1
+if [ "$SKILL_TEST_KIND" = "file" ]; then
+  printf 'late arrival\\n' > "$SKILL_TEST_DESTINATION"
+else
+  mkdir "$SKILL_TEST_DESTINATION"
+fi
+`, { mode: 0o755 });
+      try {
+        const { status, stdout, stderr } = run(['skills', 'install', '--latest', '--dir', target], {
+          PATH: `${bin}:${process.env.PATH}`,
+          SKILL_TEST_REPO: repo,
+          SKILL_TEST_KIND: kind,
+          SKILL_TEST_DESTINATION: to,
+        });
+        assert.equal(status, 1, `${skill} ${kind}: ${stderr}`);
+        assert.equal(stdout, '');
+        assert.match(stderr, /Installation incomplete/);
+        assert.match(stderr, /Inspect the destination before retrying/);
+        if (kind === 'file') assert.equal(readFileSync(to, 'utf8'), 'late arrival\n');
+        else assert.deepEqual(readdirSync(to), []);
+        assert.ok(readdirSync(target).every(name => !name.includes('.new-')));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('skills install --force replaces file and dangling-link entries explicitly', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pingroom-skills-force-entries-'));
+  const target = join(root, 'skills');
+  const missing = join(root, 'missing');
+  mkdirSync(target);
+  writeFileSync(join(target, 'pingroom-mcp'), 'old file\n');
+  symlinkSync(missing, join(target, 'pingroom-cli'));
+  try {
+    const { status, stderr } = run(['skills', 'install', '--force', '--dir', target], { PATH: brokenGitPath(root) });
+    assert.equal(status, 0, stderr);
+    for (const [skill, files] of Object.entries(BUNDLE)) {
+      assert.ok(lstatSync(join(target, skill)).isDirectory());
+      for (const file of files) assert.ok(readFileSync(join(target, skill, ...file.split('/'))).equals(bundled(skill, file)));
+    }
+    assert.equal(existsSync(missing), false);
+    assert.deepEqual(readdirSync(target).sort(), Object.keys(BUNDLE).sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a failed skills install --latest still removes its temporary clone', async () => {
