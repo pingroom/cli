@@ -343,6 +343,8 @@ pingroom rooms create -n "Status" --icon globe --color "#0391fe" --public --hand
 pingroom rooms create -n "Meetup" --icon globe --color "#0391fe" --public --handle meetup \
   --location "25.2048,55.2708" --location-name "Dubai Mall"   # listed in nearby discovery
 pingroom rooms join <code>
+pingroom rooms update <code> --hide-pings true      # apps show the room as its feed alone: no Quick Pings,
+                                                      # Custom Ping or Live update button; sends still arrive. false undoes it
 
 pingroom webhooks list --room CODE
 pingroom webhooks create --room CODE --name "CI" --action 2   # secret URL printed ONCE — store it

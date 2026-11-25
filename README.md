@@ -943,6 +943,7 @@ pingroom rooms get GZNFB6BZGJIH
 pingroom rooms create -n "Deploys" --icon bell --color "#e33122"
 pingroom rooms create -n "Status" --icon globe --color "#0391fe" --public --handle status
 pingroom rooms join GZNFB6BZGJIH
+pingroom rooms update GZNFB6BZGJIH --hide-pings true   # the apps show the room as its feed alone; false undoes it
 
 pingroom webhooks list --room GZNFB6BZGJIH
 pingroom webhooks create --room GZNFB6BZGJIH --name "CI" --action 2   # prints the secret URL once

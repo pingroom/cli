@@ -27,7 +27,7 @@ Tool names depend on how the server was added. A server added directly is
 `mcp__plugin_pingroom_mcp_pingroom__<name>`. Match whichever your session
 lists — this file names tools bare (`ask_question`, not the prefixed form).
 
-Read `references/tools.md` for the full 48-tool schema reference when you need
+Read `references/tools.md` for the full 49-tool schema reference when you need
 exact parameters (the `get_guide` tool returns it as `topic` `tools`, and this
 file as `overview`, to a client without the skill). This file teaches you which
 tool to reach for and the rules that make the difference between "sent" and

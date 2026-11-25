@@ -1,6 +1,6 @@
 # PingRoom MCP — complete tool reference
 
-Matches the public server registry in source (48 tools). To fetch the live
+Matches the public server registry in source (49 tools). To fetch the live
 catalog, POST `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` to
 https://api.pingroom.io/api/agent/mcp. Every tool call is `tools/call`; in Claude Code the tools
 surface as `mcp__pingroom__<name>` when the server was added directly, or as
@@ -414,6 +414,19 @@ Join a room using its invite code. Include the password only if the room is prot
 
   - `invite_code` (string) **(required)**. Room invite code.
   - `password` (string). Only required for password-protected rooms.
+
+## update_room_settings  [DI]
+
+Change a setting of a room the account owns or administers that only a script can
+change. `hide_pings: true` makes the apps show the room as its feed alone, with no
+Quick Pings, no Custom Ping and no Live update button; for a room people only read,
+such as a status or metrics feed. It hides the controls and refuses no send: Pings
+sent through the API, webhooks and triggers arrive as before. `false` shows them
+again. A change sends a background room refresh to room members' devices. Returns
+`{invite_code, hide_pings}`; rooms carry `hide_pings` on `list_rooms` and `get_room`.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `hide_pings` (boolean) **(required)**. `true` hides the room's Quick Pings, Custom Ping and Live update controls in the apps; `false` shows them.
 
 ## list_webhooks  [RI]
 

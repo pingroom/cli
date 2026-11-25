@@ -78,7 +78,7 @@ test('management nouns fail as usage errors without a sub-command or token', () 
   // Unknown sub-command → usage, before any credential is consulted.
   const bad = run(['rooms', 'destroy']);
   assert.equal(bad.status, 2);
-  assert.match(bad.stderr, /usage: pingroom rooms <list\|get\|create\|join\|icons>/);
+  assert.match(bad.stderr, /usage: pingroom rooms <list\|get\|create\|join\|update\|icons>/);
 
   // Known sub-command with no credential → the shared agent-token usage error.
   const noToken = run(['rooms', 'list']);
@@ -98,6 +98,37 @@ test('management nouns fail as usage errors without a sub-command or token', () 
 // returns the room itself). Reading a nested `json.webhook` / `json.room` that
 // the server never sends printed a bare "created" and swallowed the trigger
 // URL — the one credential `webhooks create` exists to hand over.
+
+test('rooms update sets hide_pings on the room settings route and refuses anything but true or false', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'PUT /api/agent/rooms/AB12CD/settings': (body) => ({ body: { invite_code: 'AB12CD', hide_pings: JSON.parse(body).hide_pings } }),
+    'PUT /api/agent/rooms/NOPE12/settings': () => ({ status: 403, body: { message: 'This action is unauthorized.' } }),
+  });
+  try {
+    const tail = ['--token', 'test-token', '--api', baseUrl];
+    const hidden = await runAsync(['rooms', 'update', 'AB12CD', '--hide-pings', 'true', ...tail]);
+    assert.equal(hidden.status, 0, hidden.stderr);
+    assert.match(hidden.stdout, /AB12CD: Pings hidden/);
+    assert.deepEqual(JSON.parse(received[0].body), { hide_pings: true });
+
+    const shown = await runAsync(['rooms', 'update', 'AB12CD', '--hide-pings', 'false', '--json', ...tail]);
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.deepEqual(JSON.parse(shown.stdout), { invite_code: 'AB12CD', hide_pings: false });
+    assert.deepEqual(JSON.parse(received[1].body), { hide_pings: false });
+
+    const refused = await runAsync(['rooms', 'update', 'NOPE12', '--hide-pings', 'true', ...tail]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /rooms update failed: .*unauthorized/);
+
+    for (const args of [['rooms', 'update', 'AB12CD'], ['rooms', 'update', 'AB12CD', '--hide-pings', 'maybe'], ['rooms', 'update', '--hide-pings', 'true']]) {
+      const usage = await runAsync([...args, ...tail]);
+      assert.equal(usage.status, 2, `${args.join(' ')}: ${usage.stderr}`);
+    }
+    assert.equal(received.length, 3);
+  } finally {
+    server.close();
+  }
+});
 
 test('rooms join sends the protected-room password and preserves server failures', async () => {
   const { server, baseUrl, received } = await questionServer({
