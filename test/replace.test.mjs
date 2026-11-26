@@ -192,7 +192,7 @@ test('--replace-key works with --idempotency-key, which a replacement itself can
 
 test('every replace refusal prints the API code and message, and exits 1', async () => {
   const refusals = [
-    [403, 'not_ping_owner', /Only the agent credential that sent a ping can replace it/],
+    [403, 'not_ping_owner', /Only the agent credential that sent a ping can replace or withdraw it/],
     [422, 'unsupported_ack', /cannot be replaced/],
     [409, 'replace_window_closed', /24 hours/],
     [409, 'replace_limit_reached', /at most 20 times/],
@@ -211,22 +211,44 @@ test('every replace refusal prints the API code and message, and exits 1', async
   }
 });
 
-test('a replace 404 tells a missing ping from a route that did not match', async () => {
+// The two 404s laravel and agent-api answer on this route: the ping is not in
+// the room (PingReplacementService, with a code), or no active room has the
+// code (route binding, `{"message":"Resource not found."}` and no code).
+test('a replace 404 tells a missing ping from an unknown room code', async () => {
   const missing = await recordingServer({ code: 'notification_not_found', message: 'No Ping with that id in this room.' }, 404);
-  const off = await recordingServer({ message: 'Resource not found.' }, 404);
+  const noRoom = await recordingServer({ message: 'Resource not found.' }, 404);
   try {
     const gone = await runAsync(['ping', ...TOKEN_ARGS, '--api', missing.baseUrl, '-m', 'hi', '--replace', ID]);
     assert.equal(gone.status, 1);
-    assert.match(gone.stderr, /No ping with that id in room AB12/);
+    assert.match(gone.stderr, /No ping with that id in room AB12: the id is wrong, or the ping was sent to another room/);
     assert.doesNotMatch(gone.stderr, /No room has the code/);
 
-    const unknown = await runAsync(['ping', ...TOKEN_ARGS, '--api', off.baseUrl, '-m', 'hi', '--replace', ID]);
+    const unknown = await runAsync(['ping', ...TOKEN_ARGS, '--api', noRoom.baseUrl, '-m', 'hi', '--replace', ID]);
     assert.equal(unknown.status, 1);
     assert.match(unknown.stderr, /No room has the code AB12/);
-    assert.match(unknown.stderr, /may not have replacing a ping switched on yet/);
+    assert.doesNotMatch(unknown.stderr, /switched on|No ping with that id/);
   } finally {
     missing.server.close();
-    off.server.close();
+    noRoom.server.close();
+  }
+});
+
+// The route matches only a UUID, so any other id would come back as the same
+// code-less 404 an unknown room gets, and be blamed on the room code.
+test('exit 2: --replace refuses an id that is not a UUID, before any request', async () => {
+  const { server, baseUrl, received } = await recordingServer();
+  try {
+    for (const id of ['n1', '42', `${ID}x`, `{${ID}}`]) {
+      const { status, stderr } = await runAsync(['ping', ...TOKEN_ARGS, '--api', baseUrl, '-m', 'hi', '--replace', id]);
+      assert.equal(status, 2, id);
+      assert.match(stderr, /--replace takes a ping id, a UUID/);
+    }
+    assert.equal(received.length, 0);
+    const upper = await runAsync(['ping', ...TOKEN_ARGS, '--api', baseUrl, '-m', 'hi', '--replace', ID.toUpperCase()]);
+    assert.equal(upper.status, 0, upper.stderr);
+    assert.equal(received[0].path, `/api/agent/rooms/AB12/notifications/${ID.toUpperCase()}`);
+  } finally {
+    server.close();
   }
 });
 

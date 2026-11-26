@@ -111,28 +111,48 @@ test('ping --withdraw needs no --message', () => {
 
 test('a refused withdraw names the API code and explains a missing ping', async () => {
   const missing = await recordingServer({ code: 'notification_not_found', message: 'No Ping with that id in this room.' }, 404);
-  const switchedOff = await recordingServer({ message: 'Resource not found.' }, 404);
+  const noRoom = await recordingServer({ message: 'Resource not found.' }, 404);
   const closed = await recordingServer({ code: 'withdraw_window_closed', message: 'A Ping can only be withdrawn within 24 hours of sending it.' }, 409);
   const notOwner = await recordingServer({ code: 'not_ping_owner', message: 'Only the agent that sent a Ping can withdraw it.' }, 403);
   try {
     const gone = await runAsync(['ping', ...TOKEN_ARGS, '--api', missing.baseUrl, '--withdraw', ID]);
     assert.notEqual(gone.status, 0);
     assert.match(gone.stderr, /withdraw failed/);
-    assert.match(gone.stderr, /No ping with that id in room AB12/);
+    assert.match(gone.stderr, /No ping with that id in room AB12: the id is wrong, or the ping was sent to another room/);
+    assert.doesNotMatch(gone.stderr, /No room has the code/);
 
-    const off = await runAsync(['ping', ...TOKEN_ARGS, '--api', switchedOff.baseUrl, '--withdraw', ID]);
-    assert.notEqual(off.status, 0);
-    assert.match(off.stderr, /withdrawing a ping switched on/);
+    // A 404 with no code is route binding's answer for an unknown room code.
+    const unknown = await runAsync(['ping', ...TOKEN_ARGS, '--api', noRoom.baseUrl, '--withdraw', ID]);
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /No room has the code AB12/);
+    assert.doesNotMatch(unknown.stderr, /switched on|No ping with that id/);
 
     const old = await runAsync(['ping', ...TOKEN_ARGS, '--api', closed.baseUrl, '--withdraw', ID]);
     assert.notEqual(old.status, 0);
     assert.match(old.stderr, /withdraw_window_closed|24 hours/);
+    assert.doesNotMatch(old.stderr, /No room has the code|No ping with that id/);
 
     const other = await runAsync(['ping', ...TOKEN_ARGS, '--api', notOwner.baseUrl, '--withdraw', ID]);
     assert.notEqual(other.status, 0);
-    assert.match(other.stderr, /not_ping_owner|can withdraw it/);
+    assert.match(other.stderr, /can withdraw it/);
+    assert.match(other.stderr, /Only the agent credential that sent a ping can replace or withdraw it/);
+    assert.doesNotMatch(other.stderr, /No room has the code|No ping with that id/);
   } finally {
-    for (const s of [missing, switchedOff, closed, notOwner]) s.server.close();
+    for (const s of [missing, noRoom, closed, notOwner]) s.server.close();
+  }
+});
+
+test('exit 2: --withdraw refuses an id that is not a UUID, before any request', async () => {
+  const { server, baseUrl, received } = await recordingServer();
+  try {
+    for (const id of ['n1', '42', `${ID}/withdraw`]) {
+      const { status, stderr } = await runAsync(['ping', ...TOKEN_ARGS, '--api', baseUrl, '--withdraw', id]);
+      assert.equal(status, 2, id);
+      assert.match(stderr, /--withdraw takes a ping id, a UUID/);
+    }
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
   }
 });
 

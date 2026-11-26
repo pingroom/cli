@@ -436,7 +436,7 @@ List the incoming webhooks (with their trigger URLs) for a room the account owns
 
 ## create_webhook  [–]
 
-Create an incoming webhook for a room the account owns. The bound account must be Pro. Returns the secret trigger URL — treat it as a credential.
+Create an incoming webhook for a room the account owns. A free account keeps one enabled incoming webhook across the rooms it owns: creating a second enabled one is refused with pro_feature_required, and the message names the room whose webhook holds the slot (pass enabled: false to create it switched off). Pro lifts that cap. Returns the secret trigger URL — treat it as a credential.
 
   - `invite_code` (string) **(required)**. Room invite code.
   - `name` (string) **(required)** — ≤100 chars. Webhook name (shown to the owner).
@@ -451,7 +451,7 @@ Create an incoming webhook for a room the account owns. The bound account must b
 
 ## update_webhook  [D]
 
-Update an incoming webhook (by id) on a room the account owns — e.g. change its icon, title, message, or sound.
+Update an incoming webhook (by id) on a room the account owns — e.g. change its icon, title, message, or sound. On a free account, switching on a second enabled incoming webhook across its rooms is refused with pro_feature_required.
 
   - `invite_code` (string) **(required)**. Room invite code.
   - `webhook_id` (string) **(required)**. Webhook id (from list_webhooks or create_webhook).

@@ -184,9 +184,7 @@ Only an ordinary ping you sent in a private room, under 24 hours old and
 replaced fewer than 20 times can be replaced. A question, handoff, live progress
 card, "Who's on it?" request, a ping that needs a confirmation, or one with a
 checklist cannot (each refusal has its own code, below). A replacement counts
-like a send against a free account's daily allowance. If the server has not
-switched replacing on yet, `replace_notification` answers a plain 404 with no
-code and a `replace_key` is stored and ignored: send a new ping instead.
+like a send against a free account's daily allowance.
 
 ### Take a ping back
 `withdraw_notification { invite_code, notification_id }` removes a ping's
@@ -204,8 +202,7 @@ ping's `replace_key` sends a new one).
 Removal is best effort, so never rely on it for something that must not be seen:
 a phone that is offline, has the app force-quit or restricts background activity
 keeps the notification until it next opens the app, and only recent builds of the
-iPhone and Android apps remove it. If the server has not switched withdrawing on
-yet, `withdraw_notification` answers a plain 404 with no code.
+iPhone and Android apps remove it.
 
 ### Urgent / must-be-confirmed
 - `is_urgent: true` breaks through Focus/Do Not Disturb and through room and member mutes (never a block). Delivery-only — it
@@ -410,6 +407,21 @@ draws equal segments, and the server derives `progress` when you omit it. An
 older app shows the status layout with the server-written `message`: for `value`
 and `stats` the server writes one when you send none.
 
+A person in the app or on the web picks from fewer templates than `live_status`
+takes; timer, value and stats start only through the API (this connector, the
+CLI in a terminal, an SDK):
+
+| Template | Phone app (iPhone, Android) | Web app | Your terminal (CLI), MCP, SDKs, API |
+|---|---|---|---|
+| Status, Steps, Countdown, Matchup | yes | yes | yes |
+| Decision (`question`; the CLI also takes `decision`) | yes¹ | yes¹ | yes |
+| Who's on it? (`claim`) | yes² | yes² | yes² |
+| Progress, Metrics | no | yes | yes |
+| Timer, Value, Stats | no | no | yes |
+
+¹ Only while the operator has Questions enabled. ² Private standard rooms only:
+public and personal rooms refuse it (`claim_private_rooms_only`).
+
 **Who's on it?** A `live_status` stream with `template: "claim"` asks a private
 room who will take a task. Put the request in `title` (1–120 characters) and add
 an optional `deadline_at` at most 8 hours away. Public and personal rooms refuse
@@ -489,7 +501,8 @@ on the code, don't retry blindly:
 
 | code | Meaning → what to do |
 |---|---|
-| `pro_required` | Attachments/webhooks need Pro. Say so; don't loop. |
+| `pro_required` | Attachments need Pro. Say so; don't loop. |
+| `pro_feature_required` | `create_webhook` / `update_webhook` on a free account that already has its one enabled incoming webhook; the message names the room holding it. Tell the human to turn that one off or upgrade, or create this one with `enabled: false`. Don't loop. |
 | `room_not_granted` | Room is outside this agent's grant. Ask the human to add it under Connected Agents, or pick a granted room. |
 | `insufficient_scope` | The token uses a legacy partial grant. Follow the disconnect and reconnect flow once for full access, then verify the expected identity. |
 | `invalid_credential` / HTTP 401 | The credential is missing, expired, revoked, or has the wrong audience. Reload the client after login and verify `connection_info`; renew authorization if needed. Never use a saved room code as evidence that the new account connected. |

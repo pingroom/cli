@@ -70,6 +70,8 @@ test('run preview executes once, preserves output/status, and warns before execu
   assert.match(result.stderr, /child stderr/);
   assert.deepEqual(previewPayload(result.stderr).title, 'Build');
   assert.match(previewPayload(result.stderr).message, /^Build failed \(exit 7\) after \d+\.\ds\.$/);
+  assert.equal(previewPayload(result.stderr).emoji, '❌');
+  assert.equal('is_urgent' in previewPayload(result.stderr), false);
 });
 
 test('run forwards arguments literally after --, including --help and shell syntax', async (t) => {
@@ -79,6 +81,7 @@ test('run forwards arguments literally after --, including --help and shell synt
   assert.equal(result.code, 0);
   assert.deepEqual(JSON.parse(result.stdout), args);
   assert.match(previewPayload(result.stderr).message, /succeeded \(exit 0\)/);
+  assert.deepEqual(Object.keys(previewPayload(result.stderr)).sort(), ['message', 'title']);
 });
 
 test('run passes piped stdin through to the child', async (t) => {
@@ -178,7 +181,56 @@ test('saved credential and room use their bound origin', async (t) => {
   assert.equal(server.received.length, 1);
   assert.equal(server.received[0].headers.authorization, 'Bearer saved-secret');
   assert.equal(server.received[0].url, '/api/agent/rooms/HOME/notifications');
+  // An agent send names the ping's emoji action_icon.
+  assert.equal(server.received[0].body.action_icon, '❌');
+  assert.equal('emoji' in server.received[0].body, false);
+  assert.equal('is_urgent' in server.received[0].body, false);
   assert.doesNotMatch(result.stderr + result.stdout, /saved-secret/);
+});
+
+test('a failed run is marked ❌, and urgent only with --urgent-on-failure', async (t) => {
+  const server = await stub(t);
+  const hook = `${server.url}/hook`;
+  const env = environment(t);
+  const runs = [
+    [['-w', hook, '--', NODE, '-e', 'process.exit(3)'], 3],
+    [['-w', hook, '--urgent-on-failure', '--', NODE, '-e', 'process.exit(3)'], 3],
+    [['-w', hook, '--urgent-on-failure', '--', NODE, '-e', ''], 0],
+    [['-w', hook, '--urgent-on-failure', '--', '/private/folder/does-not-exist-pingroom-test'], 127],
+  ];
+  for (const [argv, code] of runs) {
+    const result = await execute(argv, env);
+    assert.equal(result.code, code, argv.join(' '));
+  }
+  const [failed, urgent, succeeded, missing] = server.received.map((request) => request.body);
+  // A webhook names the ping's emoji `emoji`.
+  assert.deepEqual(Object.keys(failed).sort(), ['emoji', 'message', 'title']);
+  assert.equal(failed.emoji, '❌');
+  assert.match(failed.message, /failed \(exit 3\)/);
+  assert.equal(urgent.emoji, '❌');
+  assert.equal(urgent.is_urgent, true);
+  // A success is sent exactly as before, the flag notwithstanding.
+  assert.deepEqual(Object.keys(succeeded).sort(), ['message', 'title']);
+  assert.match(succeeded.message, /succeeded \(exit 0\)/);
+  assert.equal(missing.emoji, '❌');
+  assert.equal(missing.is_urgent, true);
+
+  const agent = await stub(t);
+  writeFileSync(join(env.PINGROOM_HOME, 'credentials.json'), JSON.stringify({ token: 'saved-secret', api_url: agent.url, room: { invite_code: 'HOME' } }));
+  const viaToken = await execute(['--urgent-on-failure', '--', NODE, '-e', 'process.exit(1)'], env);
+  assert.equal(viaToken.code, 1);
+  assert.deepEqual(agent.received[0].body.action_icon, '❌');
+  assert.equal(agent.received[0].body.is_urgent, true);
+  assert.equal('emoji' in agent.received[0].body, false);
+});
+
+test('run --urgent is refused before the command starts, naming --urgent-on-failure', async (t) => {
+  const env = environment(t);
+  const marker = join(env.PINGROOM_HOME, 'ran');
+  const result = await execute(['--preview', '--urgent', '--', NODE, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], env);
+  assert.equal(result.code, 2);
+  assert.equal(existsSync(marker), false);
+  assert.match(result.stderr, /--urgent is not supported here: use --urgent-on-failure/);
 });
 
 test('stored credential cannot be redirected and child does not start', async (t) => {

@@ -302,6 +302,22 @@ timer (counts up from `--started-at epoch`, default now; update at least every
 15 minutes or it is ended as stale) · value (`--value`, `--value-label`,
 `--delta`, `--trend up|down|flat`) · stats (`--stat "Label=Value"` ×4–8).
 An older app shows the status layout with the server-written message.
+
+Not every surface offers every template. A person in the app or on the web
+picks from fewer; timer, value and stats start only from your terminal (or MCP,
+an SDK, the API):
+
+| Template | Phone app (iPhone, Android) | Web app | Your terminal (CLI), MCP, SDKs, API |
+|---|---|---|---|
+| Status, Steps, Countdown, Matchup | yes | yes | yes |
+| Decision (`question`; the CLI also takes `decision`) | yes¹ | yes¹ | yes |
+| Who's on it? (`claim`) | yes² | yes² | yes² |
+| Progress, Metrics | no | yes | yes |
+| Timer, Value, Stats | no | no | yes |
+
+¹ Only while the operator has Questions enabled. ² Private standard rooms only:
+public and personal rooms refuse it (`claim_private_rooms_only`).
+
 The template is fixed at start, and so are its `--tag` labels (`live start
 --tag deploy`; a later `update` or `end` refuses `--tag`); one stream per
 correlation id; **always end
@@ -373,7 +389,10 @@ pingroom attachment get <id> --out - | sha256sum   # bytes to stdout (CLI ≥ 0.
 pingroom attachment delete <id>
 ```
 
-Webhook creation and attachment upload are Pro. `--json` on any command prints
+Attachment upload is Pro. A free account keeps one enabled incoming webhook
+across the rooms it owns: `webhooks create` for a second enabled one is
+refused with `pro_feature_required`, naming the room that holds the slot (pass
+`--enabled false` to create it switched off). Pro lifts that cap. `--json` on any command prints
 the raw response for scripting. From CLI 0.14.0, `attachment get` without
 `--out` refuses to write the bytes to a terminal (exit 2); a pipe or redirect
 still gets them, and `--out -` sends them to stdout on purpose. From CLI
@@ -456,6 +475,13 @@ ready-to-paste settings block.
 Plain shell everywhere else — the CLI is the contract. Webhook mode when the
 pipeline should hold no account credential at all.
 
+```bash
+# Wrap a job: one ping when it ends, with its label, exit status and duration
+# (never its arguments or output). A non-zero exit arrives marked ❌;
+# --urgent-on-failure also makes that ping urgent. A success is never urgent.
+pingroom run --name migrate --urgent-on-failure -- ./migrate.sh
+```
+
 ## Installing these skills elsewhere
 
 `pingroom skills` lists both published skills and every way to install them;
@@ -473,7 +499,10 @@ this skill to stdout (`pingroom skills show pingroom-mcp` prints the MCP one),
   interactively, or export `PINGROOM_TOKEN`.
 - `room_not_granted` → the human scoped this agent to specific rooms; they add
   more under Connected Agents in the app.
-- `pro_required` → attachments/webhooks need this account upgraded; quick ping
+- `pro_feature_required` on `webhooks create` / `webhooks update` → the free
+  account already has its one enabled incoming webhook (the message names its
+  room). Say so: the human turns that one off or upgrades. Don't retry.
+- `pro_required` → attachment uploads need this account upgraded; quick ping
   slots 5–16 and `actions layout` need the ROOM OWNER on Pro. Say so instead
   of retrying.
 - `quick_action_input_required` → that Ping needs a detail: run
@@ -485,16 +514,18 @@ this skill to stdout (`pingroom skills show pingroom-mcp` prints the MCP one),
 - `quick_action_layout_changed` → the pages moved since they were read; run
   `pingroom actions list` and retry. `quick_action_page_in_use` → a time
   trigger, webhook or agent binding still targets that page; retarget it first.
-- `--replace` refused → `not_ping_owner` / `notification_not_found`: only the
-  token that sent a ping can replace it, in the room you named. `replace_window_closed`
+- `--replace` refused → `not_ping_owner` (403): only the token that sent a ping
+  can replace it. `notification_not_found` (404): no ping with that id in the
+  room you named (a wrong id, or a ping sent to another room). A 404 with no
+  code means no room has that code. An id that is not a UUID exits 2 before
+  anything is sent. `replace_window_closed`
   / `replace_limit_reached`: the ping is 24 hours old or already replaced 20
   times; send a new ping (with `--replace-key` the next send starts one by
   itself). `unsupported_room`, `unsupported_question`, `unsupported_handoff`,
   `unsupported_live_status`, `unsupported_claim`, `unsupported_ack`,
   `unsupported_checklist`, `unsupported_source`: that ping cannot be replaced
   (public or personal room, question, handoff, live card, "Who's on it?"
-  request, a ping needing confirmation, one with a checklist). A bare 404 with
-  no code means the server has not switched replacing on yet. `ping_withdrawn`:
+  request, a ping needing confirmation, one with a checklist). `ping_withdrawn`:
   the ping was taken back with `--withdraw`; send a new one.
 - `--replace` refused with `unsupported_actions` → that ping has buttons; they
   and the text around them stay as sent. Send a new ping.
@@ -504,8 +535,7 @@ this skill to stdout (`pingroom skills show pingroom-mcp` prints the MCP one),
   retrying), `feature_disabled` (the operator turned buttons off). A label, URL
   or body the server refuses is a 422 on its field, e.g. `data.actions.0.label`.
 - `--withdraw` refused → the same codes as `--replace`, except the window is
-  `withdraw_window_closed` (24 hours). A bare 404 with no code means the server
-  has not switched withdrawing on yet.
+  `withdraw_window_closed` (24 hours).
 - `payload_too_large` (HTTP 413) → the request body exceeded the server limit:
   attachments are 5 MiB each and at most 4 per ping. `--data` is capped at
   8 KB as the server measures the JSON (each non-ASCII UTF-16 code unit counts

@@ -201,6 +201,18 @@ commands terminated by a signal return `128 + signal number`. Other launch
 failures return `126`. Notification delivery times out after 10 seconds by
 default; `--notify-timeout <seconds>` accepts an integer from 1 to 60.
 
+A command that exits non-zero (it failed, a signal stopped it, or it could not
+start) sends its ping with the ❌ emoji, so a failure does not look like a
+success: the app shows ❌ on the ping, and the notification puts it ahead of
+its text. A success sends the same ping as always. To also make a failure
+urgent, add `--urgent-on-failure`: that ping breaks through Focus and Do Not
+Disturb and reaches members who muted the room (a block still wins). A success
+is never urgent, so `run` has no `--urgent`.
+
+```bash
+pingroom run --name migrate --urgent-on-failure -- sh -c 'exit 3'   # "migrate failed (exit 3) after …", marked ❌ and urgent
+```
+
 Commands run directly, without an implicit shell. To use shell built-ins or a
 pipeline, invoke your shell explicitly. On Windows, `.cmd` and `.bat` scripts
 (including the usual `npm` shim) need an explicit command interpreter; a direct
@@ -317,7 +329,8 @@ cannot change it, so `--tag` there is a usage error.
 To change what a ping you already sent says, pass its id to `--replace`. The
 notification on each recipient's phone changes in place, silently: no second
 notification, no sound, unread counts unchanged. The ping id is the `id` a send
-returns (`--json`), or the one `pingroom listen` prints.
+returns (`--json`), or the one `pingroom listen` prints. It is a UUID; anything
+else is a usage error before a request is made.
 
 ```bash
 ID=$(pingroom ping --token "$PINGROOM_TOKEN" --room ab12cd -m "Build 41: running" --json | jq -r .id)
@@ -352,8 +365,12 @@ pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 41: running" --replace-key bu
 pingroom ping -w "$PINGROOM_WEBHOOK_URL" -m "Build 41: green"   --replace-key build-41   # replaces it
 ```
 
-Until the server has replacing switched on, `--replace` fails with a bare 404
-and `--replace-key` sends a new ping every time.
+When `--replace` or `--withdraw` gets a 404, the CLI says which one it is:
+`notification_not_found` means no ping with that id is in the room you named (a
+wrong id, or a ping sent to another room), and a 404 with no code means no room
+has that code. A ping another credential sent is refused with `not_ping_owner`
+(403), and one past its 24 hours with `replace_window_closed` or
+`withdraw_window_closed` (409).
 
 To take back a ping you already sent, pass its id to `--withdraw`. Its
 notification is removed from each recipient's Lock Screen and Notification
@@ -374,8 +391,7 @@ limit, and a withdrawn ping can no longer be replaced (`--replace` fails with
 `ping_withdrawn`; `--replace-key` starts a new ping). Removal is best effort: a
 phone that is offline, has the app force-quit or restricts background activity
 keeps the notification until it next opens the app, and only recent builds of the
-iPhone and Android apps remove it. Until the server has withdrawing switched on,
-`--withdraw` fails with a bare 404.
+iPhone and Android apps remove it.
 
 To make the ping actionable, add `--require-ack`. The first eligible recipient to
 acknowledge it resolves the default `any` mode. Add `--ack-mode all` to wait
@@ -696,7 +712,7 @@ pingroom live <start|update|end|get|claim> [options]
 ```
 
 Works with either an agent token (`--token`, needs the `pingroom:live:write`
-scope) or a room's incoming webhook (`--webhook`, Pro) — both speak the same
+scope) or a room's incoming webhook (`--webhook`) — both speak the same
 `live_status` contract.
 
 ```bash
@@ -749,6 +765,27 @@ pingroom live update -c migrate-5 --segment 2
 An app that predates a template shows the status layout: your title and message.
 For `value` and `stats` the server writes the message when you send none, so an
 older app still reads well; the current app draws the values themselves.
+
+### Which templates each surface offers
+
+All 11 start from your terminal. A person starting a live update in the phone
+app or the web app picks from fewer:
+
+| Template | Phone app (iPhone, Android) | Web app | Your terminal (CLI), MCP, SDKs, API |
+|---|---|---|---|
+| Status, Steps, Countdown, Matchup | yes | yes | yes |
+| Decision (`question`; the CLI also takes `decision`) | yes¹ | yes¹ | yes |
+| Who's on it? (`claim`) | yes² | yes² | yes² |
+| Progress, Metrics | no | yes | yes |
+| Timer, Value, Stats | no | no | yes |
+
+¹ Only while the operator has Questions enabled. ² Private standard rooms only:
+public and personal rooms refuse it (`claim_private_rooms_only`).
+
+Timer, Value and Stats start only from your terminal (or MCP, an SDK, the API).
+The phone app leaves Progress and Metrics out on purpose: a percentage or a row
+of numbers is only true while something measures it, so a script with a data
+source starts those. The phone app draws all 11 when they arrive.
 
 ### Who's on it? (`pingroom live claim`)
 
@@ -972,8 +1009,11 @@ pingroom attachment get <id> --out report.md            # stdout when piped; --o
 pingroom attachment delete <id>
 ```
 
-Creating webhooks and uploading attachments require a Pro account; public-room
-creation runs under its own consent scope (`pingroom:rooms:publish`).
+Uploading attachments requires a Pro account. A free account keeps one enabled
+incoming webhook across the rooms it owns: `webhooks create` (or `webhooks
+update --enabled true`) for a second one is refused with `pro_feature_required`,
+naming the room that holds the slot; Pro lifts that cap. Public-room creation
+runs under its own consent scope (`pingroom:rooms:publish`).
 
 Each sub-command takes only the flags listed for it. A flag that belongs to a
 different sub-command (`rooms create --password`, `actions list --url`) or to a
