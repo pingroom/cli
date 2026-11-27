@@ -548,8 +548,9 @@ on the code, don't retry blindly:
 | `feature_disabled` | PingRoom turned that capability off (`feature` names it, e.g. `sending.questions`). Tell the human; don't retry. A ping carrying an attachment, link, location or checklist depends only on that extra's switch. |
 
 New MCP connections receive the single `pingroom:full` consent grant. It
-expands to 20 internal permissions, including permission to edit the robot's
-profile; it does not change the human's account profile. Room grants and
+expands to the server's internal permissions. `update_agent_profile` and
+`set_avatar` edit the robot's profile; `update_profile` and
+`set_profile_avatar` edit the connected human's profile. Room grants and
 account-tier limits still apply to every call.
 
 ## CLI companion
