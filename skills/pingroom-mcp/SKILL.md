@@ -27,7 +27,7 @@ Tool names depend on how the server was added. A server added directly is
 `mcp__plugin_pingroom_mcp_pingroom__<name>`. Match whichever your session
 lists — this file names tools bare (`ask_question`, not the prefixed form).
 
-Read `references/tools.md` for the full 49-tool schema reference when you need
+Read `references/tools.md` for the full 81-tool schema reference when you need
 exact parameters (the `get_guide` tool returns it as `topic` `tools`, and this
 file as `overview`, to a client without the skill). This file teaches you which
 tool to reach for and the rules that make the difference between "sent" and
@@ -476,6 +476,33 @@ new (a room holds at most 8: `422 metrics_limit_reached`); `delete_metric
 - Writing needs the human to own or administer the room (a member's agent can
   only read). Repeating the stored value changes nothing, so its updated time
   stays truthful.
+
+### Members, rooms, schedules and the human's profile
+Everything here acts **as your human**: an invitation, a removal, a rename or a
+scheduled Ping reads as theirs, and `leave_room` takes *them* out of the room.
+Ask first (`ask_question` or `request_approval`) before `delete_room`,
+`leave_room`, `remove_room_member`, a new personal-room `handle` or muting a
+room, unless they asked for exactly that.
+- **Members.** `list_room_members` gives each member's `user_id`, the id
+  `remove_room_member`, `set_member_role` and a member mute take.
+  `list_invitable_people` lists only people your human already shares a private
+  room with; `invite_to_room { invite_code, recipient_ids }` sends each an
+  in-app invitation and a push from your human (`sent` is the count).
+  `list_room_invitations`, `accept_room_invitation` and
+  `dismiss_room_invitation` handle the ones your human received.
+- **Rooms.** `update_room` changes the name, icon (a catalog id, as for
+  `create_room`), colour, description, who may send and the cooldown; a
+  room's public identity is not editable. `delete_room` is permanent.
+- **Scheduled Pings.** `create_time_trigger` always needs `timezone` (IANA),
+  and a new one is **off** until you send `enabled: true`. It is sent later as
+  the room owner, not as you. A free account keeps one switched on.
+- **Outgoing webhook.** `update_outgoing_webhook` streams every Ping in the
+  room to a URL; the answer's `signing_secret` is a credential. A URL you set is
+  switched off when your human disconnects you.
+- **Profiles.** `update_profile`, `set_profile_avatar` and the contact-card and
+  personal-room tools change **your human's** profile; `update_agent_profile`
+  and `set_avatar` change **yours**. `update_contact_card` replaces the whole
+  card, so read it first. `get_profile` never includes the email address.
 
 ### Reading the room
 - `connection_info` — verify the owner ID, agent handle, and home room; recover

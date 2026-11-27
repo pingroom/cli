@@ -1,6 +1,6 @@
 # PingRoom MCP — complete tool reference
 
-Matches the public server registry in source (49 tools). To fetch the live
+Matches the public server registry in source (81 tools). To fetch the live
 catalog, POST `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` to
 https://api.pingroom.io/api/agent/mcp. Every tool call is `tools/call`; in Claude Code the tools
 surface as `mcp__pingroom__<name>` when the server was added directly, or as
@@ -415,6 +415,66 @@ Join a room using its invite code. Include the password only if the room is prot
   - `invite_code` (string) **(required)**. Room invite code.
   - `password` (string). Only required for password-protected rooms.
 
+## list_room_members  [RI]
+
+List a room's members as the account sees them in the app: members[], each with user_id (for remove_room_member, set_member_role and member mutes), name, role (owner, admin or member), emoji, colour, picture, personal-room handle and joined_at. In a public room a subscriber who is not staff sees only the staff.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## list_invitable_people  [RI]
+
+List the people the account can invite into a room: everyone it already shares a private room with, 30 per page, sorted by name. people[] each have user_id (pass it to invite_to_room), name, picture, the room they share (shared_room) and status: member, invited (an invitation is still open) or available. When this agent was given only some rooms, only people from those rooms are listed.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `q` (string) — ≤100 chars. Only people whose name contains this text.
+  - `page` (integer). Page number, from 1. has_more says whether another page follows.
+
+## invite_to_room  [–]
+
+Invite people into a room, as the account: each gets an in-app invitation and a push ("<your name> invited you"), open for 7 days. Only people from list_invitable_people can be invited (someone the account shares a private room with); any other id fails the whole call with 422. A password-protected room or the personal room takes invitations from its owner only. Inviting someone already invited, or already a member, sends nothing. Answers 201 with sent: how many invitations went out.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `recipient_ids` (array) **(required)** — 1–20 items. Up to 20 ids from list_invitable_people. Items: string, UUID.
+
+## remove_room_member  [DI]
+
+Remove a member from a room. The account must own the room, or be an admin removing someone who is not an admin (never in a personal room); the owner cannot be removed. The other members see "<your name> removed <member>" (public rooms stay silent). The person can rejoin only with a new invite.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `user_id` (string) **(required)** — UUID. A person's user_id, as list_room_members and list_invitable_people return it.
+
+## set_member_role  [DI]
+
+Make a member an admin, or an admin a plain member, in a room the account owns. Admins can edit the room and remove members who are not admins. The room is told of the change.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `user_id` (string) **(required)** — UUID. A person's user_id, as list_room_members and list_invitable_people return it.
+  - `role` (string: `admin` | `member`) **(required)**. The member's new role.
+
+## leave_room  [DI]
+
+Take the ACCOUNT (the human, not only this agent) out of a room it belongs to. The room disappears from their apps and the other members see "<your name> left the room"; getting back in needs the invite code or a new invitation. An owner cannot leave their own room (422): delete it with delete_room instead.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## list_room_invitations  [RI]
+
+List the open invitations the account has received: invitations[], each with id (for accept_room_invitation or dismiss_room_invitation), the room (name, icon, colour, description), the sender's name, the room you share with them and expires_at. Newest first, 30 per page; pass next_cursor for more. When this agent was given only some rooms, only invitations from people in those rooms are listed.
+
+  - `cursor` (string) — ≤2048 chars. next_cursor from the previous page.
+
+## accept_room_invitation  [DI]
+
+Accept an invitation, joining the account to its room (the invitation stands in for a room password). The room's members are told. The same plan limits apply as to join_room. Answers with room_id and the joined room (room is null when the account was already a member).
+
+  - `invitation_id` (string) **(required)** — UUID. Invitation id from list_room_invitations.
+
+## dismiss_room_invitation  [DI]
+
+Dismiss an invitation the account received. The sender is not told; their picker keeps showing "invited".
+
+  - `invitation_id` (string) **(required)** — UUID. Invitation id from list_room_invitations.
+
 ## update_room_settings  [DI]
 
 Change a setting of a room the account owns or administers that only a script can
@@ -427,6 +487,81 @@ again. A change sends a background room refresh to room members' devices. Return
 
   - `invite_code` (string) **(required)**. Room invite code.
   - `hide_pings` (boolean) **(required)**. `true` hides the room's Quick Pings, Custom Ping and Live update controls in the apps; `false` shows them.
+
+## update_room  [DI]
+
+Edit a room the account owns or administers: its name, icon, colour, description, whether every member may send, and the per-member cooldown. Only the fields you send change. Members see a short system Ping for a rename, a new icon or a new description, and their devices refresh. A room's public identity (visibility, @handle, category, location, owner display) is not editable here. Answers with the updated room.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `name` (string) — 1–24 chars. Room display name.
+  - `icon` (string). A v3 room-icon catalog id, e.g. "bell" (list_room_icons), or the room's current icon unchanged.
+  - `color` (string) — `^#[0-9A-Fa-f]{6}$`. Hex color, e.g. "#e33122". Any hue that stays visible on both a white and a near-black background; the room's current colour always passes.
+  - `description` (string) — ≤120 chars. Short room description. An empty string clears it.
+  - `everyone_can_trigger` (boolean). Whether every member may send the room's Pings (true) or only the owner and admins (false).
+  - `cooldown_seconds` (integer) — 0–5. Seconds a member waits between Pings in this room (0 to 5).
+
+## delete_room  [DI]
+
+Permanently delete a room the account owns. It disappears for every member, its scheduled Pings stop, its webhooks stop working and its connected agents lose it. This cannot be undone: confirm with the human first (request_approval or ask_question).
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## list_time_triggers  [RI]
+
+List a room's scheduled Pings (time triggers): triggers[], each with id, name (what it says), schedule, timezone, enabled flag and next_trigger_at, plus count.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## get_time_trigger  [RI]
+
+Fetch one scheduled Ping by id.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `trigger_id` (string) **(required)** — UUID. Scheduled Ping id from list_time_triggers or create_time_trigger.
+
+## create_time_trigger  [–]
+
+Schedule a Ping in a room the account owns. It is sent later as the account (the room owner), not as this agent, to the room's other members, and only while the room has other members. name is what it says; with action_number it presses that Quick Ping instead. schedule_type daily, weekly or monthly repeats at trigger_time; specific sends once at trigger_at; date_based counts days, weeks or months since or until anchor_date. Always pass timezone: without it every time is UTC. It is created switched off unless enabled is true. A free account may keep one scheduled Ping switched on (402 pro_feature_required for another) and 10 per room; Pro has 100 per room.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `name` (string) — ≤100 chars. What the Ping says. Without it (and without action_number) it says "Scheduled Ping".
+  - `enabled` (boolean). Whether it sends. A new one is OFF unless you send true.
+  - `schedule_type` (string: `daily` | `weekly` | `monthly` | `specific` | `date_based`) **(required)**. daily, weekly (days_of_week), monthly (day_of_month): repeat at trigger_time. specific: once, at trigger_at. date_based: count since or until anchor_date at trigger_time.
+  - `trigger_time` (string) — `^([01][0-9]|2[0-3]):[0-5][0-9]$`. Wall-clock time HH:MM (24-hour) in timezone. Required for daily, weekly, monthly and date_based.
+  - `days_of_week` (array) — at least 1 item. Weekly days, 0 = Sunday to 6 = Saturday. Items: integer, 0–6.
+  - `day_of_month` (integer) — 1–31. Monthly day, 1 to 31.
+  - `trigger_at` (string). The one moment a specific schedule sends, in the future, e.g. "2026-12-24T18:00:00Z".
+  - `date_direction` (string: `since` | `until`). date_based only: count up since anchor_date, or down until it (which must still be ahead).
+  - `anchor_date` (string) — `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`. date_based only: the calendar date YYYY-MM-DD, in timezone.
+  - `date_interval` (string: `day` | `week` | `month`). date_based only: send every day, week or month.
+  - `timezone` (string) **(required)**. IANA timezone the times are in, e.g. "Europe/London". Without it, UTC.
+  - `action_number` (integer) — 1–16. Press this Quick Ping slot instead of sending name. Slots 5 to 16 need Pro.
+
+## update_time_trigger  [DI]
+
+Change a scheduled Ping in a room the account owns: only the fields you send change, and the next send is recalculated. enabled: false pauses it; true switches it back on (a free account keeps one on).
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `trigger_id` (string) **(required)** — UUID. Scheduled Ping id from list_time_triggers or create_time_trigger.
+  - `name` (string) — ≤100 chars. What the Ping says. Without it (and without action_number) it says "Scheduled Ping".
+  - `enabled` (boolean). Whether it sends. A new one is OFF unless you send true.
+  - `schedule_type` (string: `daily` | `weekly` | `monthly` | `specific` | `date_based`). daily, weekly (days_of_week), monthly (day_of_month): repeat at trigger_time. specific: once, at trigger_at. date_based: count since or until anchor_date at trigger_time.
+  - `trigger_time` (string) — `^([01][0-9]|2[0-3]):[0-5][0-9]$`. Wall-clock time HH:MM (24-hour) in timezone. Required for daily, weekly, monthly and date_based.
+  - `days_of_week` (array) — at least 1 item. Weekly days, 0 = Sunday to 6 = Saturday. Items: integer, 0–6.
+  - `day_of_month` (integer) — 1–31. Monthly day, 1 to 31.
+  - `trigger_at` (string). The one moment a specific schedule sends, in the future, e.g. "2026-12-24T18:00:00Z".
+  - `date_direction` (string: `since` | `until`). date_based only: count up since anchor_date, or down until it (which must still be ahead).
+  - `anchor_date` (string) — `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`. date_based only: the calendar date YYYY-MM-DD, in timezone.
+  - `date_interval` (string: `day` | `week` | `month`). date_based only: send every day, week or month.
+  - `timezone` (string). IANA timezone the times are in, e.g. "Europe/London". Without it, UTC.
+  - `action_number` (integer) — 1–16. Press this Quick Ping slot instead of sending name. Slots 5 to 16 need Pro.
+
+## delete_time_trigger  [DI]
+
+Delete a scheduled Ping from a room the account owns. It will not be sent again.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `trigger_id` (string) **(required)** — UUID. Scheduled Ping id from list_time_triggers or create_time_trigger.
 
 ## list_webhooks  [RI]
 
@@ -472,6 +607,55 @@ Delete an incoming webhook (by id) from a room the account owns.
 
   - `invite_code` (string) **(required)**. Room invite code.
   - `webhook_id` (string) **(required)**. Webhook id (from list_webhooks or create_webhook).
+
+## get_outgoing_webhook  [RI]
+
+Read the outgoing webhook of a room the account owns: the URL every Ping in the room is POSTed to, whether it is on, the events it forwards, its delivery health (last_status, failure_count) and its signing_secret, which the receiver uses to check each delivery's signature. outgoing_webhook is null when the room never had one. Treat the secret as a credential.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## update_outgoing_webhook  [D]
+
+Set up the outgoing webhook of a room the account owns: every Ping in the room is then POSTed, signed, to url. A new or changed url switches the webhook off and issues a new signing_secret: test it, then send enabled: true. A url set by this agent is switched off when the human disconnects the agent. A free account keeps one outgoing webhook on across its rooms (402 for a second). Answers with the webhook, signing_secret included.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `url` (string) — ≤2048 chars. Public https:// endpoint that receives the Pings. An empty string clears it.
+  - `enabled` (boolean). Switch delivery on or off. On needs a url.
+  - `events` (array). Forward only these events; an empty list forwards every one. Items: string: `manual` | `webhook` | `time` | `location` | `telegram` | `agent` | `agent_question` | `agent_approval` | `system` | `contact_share` | `contact_request` | `user_live` | `agent_live` | `notification.acked` | `notification.expired` | `question.answered` | `question.expired` | `question.cancelled`.
+  - `regenerate_secret` (boolean). true issues a new signing_secret; the old one stops verifying at once.
+
+## test_outgoing_webhook  [–]
+
+Send one test delivery to the room's outgoing webhook url and wait up to 5 seconds for the answer: success, the HTTP status and any error. Works while the webhook is switched off.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## list_outgoing_webhook_deliveries  [RI]
+
+The outgoing webhook's delivery log for a room the account owns, newest first: each attempt's status, HTTP status code, duration and time. Holds neither the url nor the secret.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `limit` (integer) — 1–100. Rows per page (default 20).
+  - `before_id` (string) — UUID. next_before_id from the previous page.
+
+## get_room_preferences  [RI]
+
+Read the account's own notification settings for one room: whether it is muted, the members it muted, its custom sound, vibration and silent mode.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+
+## update_room_preferences  [DI]
+
+Change the account's own notification settings for one room; only the fields you send change. muted: true silences the room on the human's devices, so do it only when they asked.
+
+  - `invite_code` (string) **(required)**. Room invite code.
+  - `muted` (boolean). Mute or unmute the whole room.
+  - `member_mute` (object). It takes:
+    - `user_id` (string) **(required)** — UUID. A person's user_id, as list_room_members and list_invitable_people return it.
+    - `muted` (boolean) **(required)**. true mutes this member's Pings in the room; false unmutes them.
+  - `custom_sound` (string). Canonical sound id for this room's Pings, e.g. "ting". An empty string goes back to the room's sound.
+  - `vibration_enabled` (boolean). Whether this room's Pings vibrate.
+  - `silent_mode` (boolean). Deliver this room's Pings without sound.
 
 ## update_quick_action  [DI]
 
@@ -533,6 +717,83 @@ Set this agent's own avatar — the robot face its pings and Questions wear. Mus
 Rotate this agent's public handle — kill-switch for a leaked handle.
 
   (no arguments)
+
+## update_agent_profile  [DI]
+
+Rename this agent or choose its handle: the name and @handle room members see on its Pings, the ones already sent included. This changes the agent, never the human's profile (update_profile does that). Send display_name, handle, or both.
+
+  - `display_name` (string) — 1–40 chars. The name shown on this agent's Pings.
+  - `handle` (string) — 3–24 chars, `^@?[A-Za-z0-9_]+$`. Unique handle: letters, digits and underscores, lowercased for you; not starting with agt_. A leading @ is dropped.
+
+## get_profile  [RI]
+
+Read the human's profile: id (the public User ID connection_info names as owner.id), name, emoji, colour, timezone, avatar (avatar_source, pingroom_avatar_id, profile_image_url) and is_pro. Never their email address.
+
+  (no arguments)
+
+## update_profile  [DI]
+
+Change the human's own profile: the name, emoji avatar, colour and timezone other people see. Only the fields you send change. Sending an emoji makes it their picture and deletes an uploaded photo. Their email address and sign-in methods are not editable here. Answers with the profile, as get_profile.
+
+  - `name` (string) — 1–30 chars. Display name.
+  - `emoji` (string) — ≤10 chars. One emoji to wear as the picture.
+  - `color` (string) — `^#[0-9A-Fa-f]{6}$`. Hex colour behind the emoji, e.g. "#34c759".
+  - `timezone` (string). IANA timezone, e.g. "Europe/London".
+
+## list_avatars  [RI]
+
+The PingRoom avatar catalog, by category (bots, boys, girls): each avatar's id, descriptive tags and image url. set_profile_avatar takes any id; set_avatar (this agent's own picture) takes only the "bots" category.
+
+  (no arguments)
+
+## set_profile_avatar  [DI]
+
+Make a catalog avatar the human's own profile picture. An uploaded photo is deleted. Answers with the profile.
+
+  - `avatar_id` (string) **(required)**. Avatar id from list_avatars, e.g. "girls-3".
+
+## clear_profile_avatar  [DI]
+
+Stop using the catalog avatar as the human's picture; their emoji avatar shows instead. Answers with the profile.
+
+  (no arguments)
+
+## get_contact_card  [RI]
+
+Read the human's contact card: the links (phone, WhatsApp, Telegram, Instagram, LinkedIn, custom) they share with people through their personal room. It holds private contact details: use them only for what the human asked.
+
+  (no arguments)
+
+## update_contact_card  [DI]
+
+Replace the human's contact card with these links (1 to 20). The whole card is replaced: read it with get_contact_card first and send every link that should stay. People the card is already shared with see the new links.
+
+  - `links` (array) **(required)** — 1–20 items. Every link the card should hold. Each item takes:
+    - `platform` (string: `instagram` | `phone` | `whatsapp` | `telegram` | `linkedin` | `custom`) **(required)**. Kind of link.
+    - `value` (string) **(required)** — 1–500 chars. The number, username or URL.
+    - `label` (string) — ≤255 chars. Optional label, e.g. "Work".
+    - `sort_order` (integer). Optional position, lowest first.
+
+## get_personal_room  [RI]
+
+Read the human's personal room: the room behind their @handle link and QR code where people reach them, with its name, handle, bio, whether it is discoverable, its Quick Pings and scan_count. null when they have none.
+
+  (no arguments)
+
+## update_personal_room  [DI]
+
+Change the human's personal room: name, @handle, bio, whether it is discoverable, and its 2 to 4 Quick Pings (sent as the full list). A new handle changes their link at once and the old link stops working, including printed QR codes, so change it only when they asked. Only the fields you send change.
+
+  - `name` (string) — 1–30 chars. Personal room name.
+  - `handle` (string) — `^[A-Za-z0-9_]{3,20}$`. The @handle in their link: 3 to 20 letters, digits or underscores, lowercased for you. Must be free.
+  - `description` (string) — ≤120 chars. Bio. An empty string clears it.
+  - `is_discoverable` (boolean). Whether the personal room can be found in search.
+  - `quick_actions` (array) — 2–4 items. The full list of the room's Quick Pings, in order; it replaces the current ones. Each item takes:
+    - `label` (string) **(required)** — ≤255 chars. Button label; may be empty when icon names the Ping.
+    - `icon` (string) **(required)** — ≤255 chars. Emoji for the button.
+    - `sound` (string). Canonical sound id, e.g. "ting". Omit for the default.
+    - `requires_ack` (boolean). Whether the Ping stays open until acknowledged.
+    - `input_type` (string: `none` | `location` | `link` | `file` | `photo` | `pdf`). Detail every press of this action must carry: none (default), location (data.location), link (data.url), file (any attachment), photo (jpg/png attachment) or pdf (pdf attachment). A press without it is a 422 quick_action_input_required.
 
 
 For everyone confirmations, notification reads and `wait_for_ack` preserve
