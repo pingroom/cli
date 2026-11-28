@@ -1040,3 +1040,64 @@ test('--expected-room-sha256 pins the room for ping, ping --withdraw, and refuse
     server.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// ping --correlation-id / --reply-to / --action-icon
+// ---------------------------------------------------------------------------
+
+test('an agent ping carries --correlation-id, --reply-to and --action-icon', async () => {
+  const home = newHome();
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/rooms/ABC123/notifications': () => ({ status: 201, body: { id: 'ping-1' } }),
+  });
+  seedCredential(home, { token: 'paired-token', api_url: baseUrl, room: { invite_code: 'ABC123' } });
+  try {
+    const result = await runAsync(
+      ['ping', '-m', 'Build 512 failed', '--correlation-id', 'build:512', '--reply-to', 'req-7', '--action-icon', '🔥'],
+      { PINGROOM_HOME: home, PINGROOM_API_URL: undefined },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(received[0].body), {
+      message: 'Build 512 failed',
+      correlation_id: 'build:512',
+      reply_to: 'req-7',
+      action_icon: '🔥',
+    });
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a webhook ping carries --correlation-id and --reply-to, and refuses --action-icon', async () => {
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/webhooks/ABC123/secret': () => ({ status: 200, body: { success: true, notification_id: 'n-1' } }),
+  });
+  try {
+    const hook = `${baseUrl}/api/webhooks/ABC123/secret`;
+    const sent = await runAsync(['ping', '-m', 'Deployed', '-w', hook, '--correlation-id', 'deploy:9', '--reply-to', 'req-1']);
+    assert.equal(sent.status, 0, sent.stderr);
+    assert.deepEqual(JSON.parse(received[0].body), { message: 'Deployed', correlation_id: 'deploy:9', reply_to: 'req-1' });
+
+    const refused = await runAsync(['ping', '-m', 'Deployed', '-w', hook, '--action-icon', '🔥']);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /--action-icon requires an agent token/);
+    assert.equal(received.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('exit 2: the ids are capped at 255 characters and cannot ride on --replace or --withdraw', () => {
+  const long = run(['ping', '-m', 'x', '--token', 't', '--room', 'ab12cd', '--correlation-id', 'c'.repeat(256)]);
+  assert.equal(long.status, 2);
+  assert.match(long.stderr, /--correlation-id/);
+
+  const replace = run(['ping', '-m', 'x', '--token', 't', '--room', 'ab12cd', '--replace', '01a1e0bb-319c-7236-816d-7906bce97dad', '--correlation-id', 'c']);
+  assert.equal(replace.status, 2);
+  assert.match(replace.stderr, /--correlation-id/);
+
+  const withdraw = run(['ping', '--token', 't', '--room', 'ab12cd', '--withdraw', '01a1e0bb-319c-7236-816d-7906bce97dad', '--reply-to', 'r']);
+  assert.equal(withdraw.status, 2);
+  assert.match(withdraw.stderr, /--reply-to/);
+});

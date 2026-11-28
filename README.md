@@ -248,6 +248,9 @@ pingroom ping [options]
       --ack-mode <mode> any (default) or all original eligible recipients
       --ack-timeout <s>  Ack deadline in seconds (requires --require-ack)
       --attach <path>    Attach a file; repeat for up to 4 (requires --token)
+      --correlation-id <id>  Opaque id echoed on every read of the ping (<= 255 chars)
+      --reply-to <id>    Opaque id of what the ping answers (<= 255 chars)
+      --action-icon <e>  Emoji or icon id shown beside the ping (agent token only)
       --tag <tag>        Label the ping (lowercase letters, digits, - and _);
                          repeat for up to 10
       --replace <id>     Edit a ping you already sent (agent token only):
@@ -509,6 +512,10 @@ pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --scope room --wait \
 # A poll (needs CLI 0.14.0 or newer): everyone in the room votes once; the winning value prints:
 pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --poll --wait \
   -p 'Lunch?' -o pizza:Pizza -o tacos:Tacos
+
+# With the files the person needs to answer (repeat --attach for up to 4; Pro):
+pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd --wait \
+  -p 'Ship this report?' --attach report.pdf --attach summary.md
 
 # Fire-and-forget (prints the question id), then watch it later:
 ID=$(pingroom ask --token "$PINGROOM_TOKEN" --room ab12cd -p 'Merge PR #42?' --ttl 1800)

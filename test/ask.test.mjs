@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { run, runAsync, questionServer, parseGitHubOutputFile } from './helpers.mjs';
+import { run, runAsync, questionServer, parseGitHubOutputFile, newHome, seedCredential } from './helpers.mjs';
 
 test('exit 0: ask --help prints the ask section plus the shared flags', () => {
   const { status, stdout } = run(['ask', '--help']);
@@ -561,4 +561,53 @@ test('list sanitizes untrusted prompts and answers before terminal output', asyn
     assert.equal(status, 0);
     assert.equal(stdout, 'q_1  answered   Ship?[2J forged → deny approved\n');
   } finally { server.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// ask --attach
+// ---------------------------------------------------------------------------
+
+test('ask --attach uploads the files and sends their ids with the question', async () => {
+  const home = newHome();
+  const report = join(home, 'report.md');
+  const shot = join(home, 'shot.png');
+  writeFileSync(report, '# report');
+  writeFileSync(shot, 'png');
+  let uploads = 0;
+  const { server, baseUrl, received } = await questionServer({
+    'POST /api/agent/attachments': () => ({ status: 201, body: { attachment: { id: `att-${++uploads}` } } }),
+    'POST /api/agent/rooms/ABC123/questions': () => ({ status: 201, body: { id: 'q-1', state: 'pending' } }),
+  });
+  seedCredential(home, { token: 'paired-token', api_url: baseUrl, room: { invite_code: 'ABC123' } });
+  try {
+    const result = await runAsync(
+      ['ask', '-p', 'Ship this?', '-o', 'yes=Yes', '-o', 'no=No', '--attach', report, '--attach', shot],
+      { PINGROOM_HOME: home, PINGROOM_API_URL: undefined },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const question = received.find((request) => request.path.endsWith('/questions'));
+    assert.deepEqual(JSON.parse(question.body).attachment_ids, ['att-1', 'att-2']);
+    // Both files are up before the question that names them.
+    assert.equal(received.indexOf(question), 2);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('exit 2: ask --attach refuses a file type before anything is sent', async () => {
+  const home = newHome();
+  const bad = join(home, 'run.sh');
+  writeFileSync(bad, 'echo');
+  const { server, baseUrl, received } = await questionServer({});
+  seedCredential(home, { token: 'paired-token', api_url: baseUrl, room: { invite_code: 'ABC123' } });
+  try {
+    const result = await runAsync(['ask', '-p', 'Ship this?', '--attach', bad], { PINGROOM_HOME: home, PINGROOM_API_URL: undefined });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /only .* files are supported/);
+    assert.equal(received.length, 0);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });
