@@ -33,6 +33,11 @@ test('ping prints a web link after acceptance and preserves JSON and error outpu
     { receipt: { id }, args: { json: true }, status: 201, output: `${JSON.stringify({ id })}\n` },
     { receipt: { success: true }, args: {}, status: 200, output: 'ping sent ✅\n' },
     { receipt: { id, message: 'Denied' }, args: {}, status: 403, output: '', exit: 1 },
+    // A 2xx that carries only an error is not a delivery, from either sender.
+    { receipt: { error: 'service_unavailable' }, args: {}, status: 200, output: '', exit: 1, stderr: /delivery failed: service_unavailable/ },
+    { receipt: { error: 'service_unavailable' }, args: { webhook: 'https://api.pingroom.io/webhooks/room/secret', token: undefined, room: undefined }, status: 200, output: '', exit: 1, stderr: /delivery failed: service_unavailable/ },
+    { receipt: { success: false }, args: {}, status: 200, output: '', exit: 1 },
+    { receipt: { id, error: null }, args: {}, status: 201, output: `ping sent ✅\nView on web: ${expected}\n` },
   ];
   for (const c of cases) {
     const script = `
@@ -43,5 +48,6 @@ test('ping prints a web link after acceptance and preserves JSON and error outpu
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: { PATH: process.env.PATH } });
     assert.equal(result.status, c.exit ?? 0, result.stderr);
     assert.equal(result.stdout, c.output);
+    if (c.stderr) assert.match(result.stderr, c.stderr);
   }
 });
